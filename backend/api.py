@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from . import VERSION
 from .mesh import Mesh, MeshError, parse_target
+from .packets import packet_layout
 from .store import Store
 
 log = logging.getLogger("mcw")
@@ -39,6 +40,11 @@ class Retry(BaseModel):
 
 class Text(BaseModel):
     value: str = ""
+
+
+class Watch(BaseModel):
+    key: str
+    hours: float = 0
 
 
 class Position(BaseModel):
@@ -218,6 +224,11 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         M(request).set_notify(key, b.value)
         return ok
 
+    @app.put("/api/watch")
+    async def set_watch(request: Request, b: Watch):
+        M(request).set_watch(b.key, b.hours)
+        return ok
+
     @app.put("/api/settings/extra-regions")
     async def extra_regions(request: Request, b: Text):
         M(request).set_extra_regions(b.value)
@@ -257,6 +268,22 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         data, mime = M(request).export_packets("json" if fmt == "json" else "csv")
         name = "meshboard-traffic-" + datetime.now().strftime("%Y-%m-%dT%H%M%S") + (".json" if fmt == "json" else ".csv")
         return Response(data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.get("/api/packets/replay")
+    async def replay(request: Request, hours: float = 24):
+        return M(request).replay(hours)
+
+    @app.get("/api/packets/layout")
+    async def layout(raw: str):
+        """Abschnitte eines Rohpakets (Hex) für die Byte-Ansicht."""
+        try:
+            return packet_layout(bytes.fromhex(raw[:1024]))
+        except ValueError:
+            raise MeshError("ungültige Rohdaten")
+
+    @app.get("/api/packets/{pid:int}")
+    async def get_packet(request: Request, pid: int):
+        return M(request).get_packet(pid)
 
     # ---- Gerät ----
     @app.post("/api/advert")

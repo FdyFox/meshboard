@@ -30,6 +30,10 @@ MAX_TXT = 150        # Byte pro Nachricht
 MAX_LOG = 300        # Zeilen Protokoll-Log
 DEFAULT_ACK = "@[{name}] | received in DE-66346 | {hops} 🐇 ({path}) | {km} km"  # Vorlage für die Schnellantwort
 RETRY_S = 15         # Wartezeit nach fehlgeschlagenem Verbindungsversuch
+ECHO_S = 60          # so lange nach dem Senden Wiederholungen der eigenen Nachricht zählen
+FWD = (2, 3)         # Knotentypen, die weiterleiten (Repeater, Room-Server)
+MAX_HOP_KM = 120     # weiter reicht ein Hop praktisch nie; weitere Sprünge gelten bei der Hop-Zuordnung als unplausibel
+REPLAY_MAX = 50000   # Empfänge je Wiedergabe auf der Karte
 SAMPLE_S = 300       # Gerätewerte (Rauschen, Batterie, Sendezeit) alle 5 Minuten speichern
 
 # Duty-Cycle-Grenzen im EU-868-Band (ETSI EN 300 220 / ERC REC 70-03), Frequenzen in MHz
@@ -123,12 +127,18 @@ class Mesh:
         self.contacts: dict = {}
         self.raw_contacts: dict = {}  # Kontakte im Format der Bibliothek (für add_contact)
         self.nodes: dict = store.load_nodes()
+        self._hidx, self._hidx_n = {}, None  # Hop-Hash → Knoten (wird bei neuen Knoten neu aufgebaut)
+        self.hop_seen: dict = {}  # Schlüssel → zuletzt eindeutig als Hop in einem Pfad gesehen (ms)
+        # Beobachtete Knoten: Schlüssel → {hours: Schwelle, down: verstummt, since: Zeitpunkt der letzten Meldung}
+        self.watch: dict = store.get("watchNodes", {})
+        self.up_since = 0
         self.channels: list = store.get("channels", [])  # zuletzt vom Gerät gelesen (Namen auch ohne Verbindung)
         self.packets: list = []
         self.pkt_seq = 0
         self.neighbors: dict = {}
         self.stats = {"total": 0, "byType": {}, "minutes": {}}
         self.acks: dict = {}
+        self.echoes: list = []  # eigene Nachrichten, deren Wiederholungen gezählt werden
         self.dev_key = store.get("lastDev")
         self.msgs: dict = store.load_msgs(self.dev_key) if self.dev_key else {}
         self.chan_region: dict = store.get("chanRegion", {})
@@ -206,7 +216,7 @@ class Mesh:
 
     def settings(self) -> dict:
         return {"chanRegion": self.chan_region, "extraRegions": self.extra_regions, "notify": self.notify,
-                "ackTemplate": self.ack_template, "ackDefault": DEFAULT_ACK}
+                "ackTemplate": self.ack_template, "ackDefault": DEFAULT_ACK, "watch": self.watch}
 
     def set_ack_template(self, s: str):
         """Vorlage der Schnellantwort; leer = Standard."""
@@ -283,6 +293,61 @@ class Mesh:
             await asyncio.sleep(30)
             if self.connected:
                 await self.refresh_stats()
+                self.check_watch()
+
+    # ================= Knoten beobachten =================
+    def node_last(self, key: str) -> int:
+        """Zuletzt gehört: eigenes Advert oder eindeutig als Hop in einem Pfad."""
+        n = self.nodes.get(key) or {}
+        return max(n.get("heard") or 0, self.hop_seen.get(key, 0))
+
+    def set_watch(self, key: str, hours: float):
+        """Knoten beobachten (Meldung, wenn er `hours` Stunden nicht gehört wurde); 0 = nicht mehr beobachten."""
+        key = (key or "").lower()
+        if key not in self.nodes:
+            raise MeshError("Knoten unbekannt")
+        if not hours:
+            self.watch.pop(key, None)
+        elif not 0.5 <= hours <= 24 * 30:
+            raise MeshError("Schwelle zwischen 0,5 Stunden und 30 Tagen")
+        else:
+            w = self.watch.setdefault(key, {"down": False, "since": now_ms()})
+            w["hours"] = hours
+            w["last"] = self.node_last(key)
+        self._watch_changed()
+        self.check_watch()
+
+    def _watch_changed(self):
+        self.store.set("watchNodes", self.watch)
+        self.emit("settings", settings=self.settings())
+
+    def check_watch(self):
+        """Verstummte Knoten melden. Erst wenn die Verbindung länger steht als die Schwelle – sonst
+        wären nach einer Unterbrechung alle Knoten „verstummt“."""
+        t, changed = now_ms(), False
+        for key, w in self.watch.items():
+            last = self.node_last(key)
+            if last != w.get("last"):
+                w["last"], changed = last, True
+            lim = w["hours"] * 3600000
+            if not w["down"] and t - max(last, self.up_since) > lim:
+                w.update(down=True, since=t)
+                changed = True
+                self._watch_alert(key, True, last)
+        if changed:
+            self._watch_changed()
+
+    def _watch_heard(self, key: str, t: int):
+        w = self.watch.get(key)
+        if w and w["down"]:
+            w.update(down=False, since=t, last=t)
+            self._watch_alert(key, False, t)
+            self._watch_changed()
+
+    def _watch_alert(self, key, down, last):
+        name = (self.nodes.get(key) or {}).get("name") or key[:8]
+        log.info("[%s] %s %s", "!" if down else "+", name, "verstummt" if down else "wieder gehört")
+        self.emit("watch_alert", key=key, name=name, down=down, last=last)
 
     # ================= Befehle =================
     def _mc(self) -> MeshCore:
@@ -346,6 +411,7 @@ class Mesh:
             self.emit_status()
             raise MeshError(msg)
         self.connected = True
+        self.up_since = now_ms()
         self.connecting = False
         log.info("[+] verbunden mit %s (%s)", self.self["name"], self.label)
         dev_key = self.self["key"][:16]
@@ -428,6 +494,7 @@ class Mesh:
         was = self.connected
         self.connected = self.connecting = False
         self.acks.clear()
+        self.echoes.clear()
         if mc:
             try:
                 await asyncio.wait_for(mc.disconnect(), 5)
@@ -552,8 +619,56 @@ class Mesh:
         return next((c for c in self.contacts.values() if c["key"].startswith(p)), None)
 
     def _node_name(self, h: str):
-        names = [n.get("name") or "?" for n in self.nodes.values() if n["key"].startswith(h)]
+        names = [n.get("name") or "?" for n in self._hop_cands(h, False)]
         return names[0] if len(names) == 1 else " / ".join(names) if names else None
+
+    # ================= Hops zuordnen =================
+    def _hop_cands(self, h: str, fwd=True) -> list:
+        """Knoten, deren Schlüssel mit dem Hop-Hash beginnt. fwd: weiterleitende Typen bevorzugen."""
+        if self._hidx_n != (id(self.nodes), len(self.nodes)):
+            self._hidx, self._hidx_n = {}, (id(self.nodes), len(self.nodes))
+            for n in self.nodes.values():
+                self._hidx.setdefault(n["key"][:2], []).append(n)
+        l = [n for n in self._hidx.get(h[:2], []) if n["key"].startswith(h)]
+        return ([n for n in l if n.get("type") in FWD] or l) if fwd else l
+
+    def resolve_path(self, path: list, start: dict | None = None, end: dict | None = None) -> list:
+        """Hop-Hashes Knoten zuordnen. Eindeutige Hashes direkt; bei mehreren Kandidaten gewinnt die
+        Kombination mit dem kürzesten Weg Start → Hops → Ende (unplausibel weite Sprünge zählen fünffach).
+        Je Hop: {h, key, name, n (Anzahl Kandidaten), guess (geschätzt)}."""
+        def d(a, b):
+            if a is None:
+                return 0
+            km = hav(a[0], a[1], b[0], b[1])
+            return km * 5 if km > MAX_HOP_KM else km
+        cands = [self._hop_cands(h) for h in path]
+        # Viterbi über Kandidaten mit Position; Hops ohne Position werden übersprungen
+        states = {None: (0.0, [], [start["lat"], start["lon"]] if has_pos(start) else None)}
+        for cs in cands:
+            pc = [n for n in cs if has_pos(n)]
+            if not pc:
+                states = {k: (c, ch + [None], pt) for k, (c, ch, pt) in states.items()}
+                continue
+            new = {}
+            for n in pc:
+                p = [n["lat"], n["lon"]]
+                c, ch, _ = min(((c + d(pt, p), ch, pt) for c, ch, pt in states.values()), key=lambda x: x[0])
+                new[n["key"]] = (c, ch + [n], p)
+            states = new
+        e = [end["lat"], end["lon"]] if has_pos(end) else None
+        best = min(states.values(), key=lambda x: x[0] + (d(x[2], e) if e and x[2] else 0))[1]
+        out = []
+        for h, cs, pick in zip(path, cands, best):
+            if len(cs) == 1:
+                pick = cs[0]
+            out.append({"h": h, "key": pick["key"] if pick else None, "n": len(cs), "guess": bool(pick) and len(cs) > 1,
+                        "name": pick.get("name") if pick else " / ".join(n.get("name") or "?" for n in cs) or None})
+        return out
+
+    def _hop_name(self, h: str):
+        """Name eines direkt gehörten Hops (letzter Hop = Nachbar, also nahe der eigenen Node)."""
+        r = self.resolve_path([h], None, self.self)[0]
+        return r["name"] and r["name"] + ("?" if r["guess"] else "")
 
     async def reset_path(self, key):
         await self._lib("reset_path", bytes.fromhex(key))
@@ -961,34 +1076,62 @@ class Mesh:
         ts = int(time.time())
         m = {"dir": "out", "from": self.self["name"], "text": text, "ts": ts * 1000, "rx": now_ms(), "status": "sending"}
         if conv.startswith("ch:"):
-            idx = int(conv[3:])
-            rg = self.chan_region_of(self._chan(idx))
-            m["region"] = rg
             self.add_msg(conv, m)
-            try:
-                try:
-                    await self.apply_scope(rg)
-                except MeshError as e:
-                    if rg:
-                        raise MeshError(f"Region konnte nicht gesetzt werden ({e})")
-                await self._cmd(bytes([3, 0, idx]) + struct.pack("<I", ts) + text.encode())
-                m["status"] = "sent"
-            except MeshError as e:
-                m["status"], m["err"] = "fail", str(e)
-            self.update_msg(conv, m)
+            await self.send_channel(conv, m)
         else:
             m["attempt"] = 0
             self.add_msg(conv, m)
             await self.send_direct(conv, m)
 
+    async def send_channel(self, conv: str, m: dict):
+        idx = int(conv[3:])
+        ch, name = self._chan(idx), self.self["name"]
+        rg = m["region"] = self.chan_region_of(ch)
+        ts = m["ts"] // 1000
+        if m.get("attempt"):  # neuer Zeitstempel, sonst verwerfen Repeater die Wiederholung als Duplikat
+            ts = max(int(time.time()), ts + 1)
+            m["ts"] = ts * 1000
+        m["status"] = "sending"
+        m.pop("err", None)
+        self.update_msg(conv, m)
+        sec = bytes.fromhex(ch["secret"]) if ch else None
+        if sec:
+            def own(p):
+                if not mac_ok(sec, p["_payload"]):
+                    return False
+                d = decrypt(sec, p["_payload"])
+                return bool(d) and (d["ts"], d["from"], d["text"]) == (ts, name, m["text"])
+            self._watch_echo(conv, m, 5, own)
+        try:
+            try:
+                await self.apply_scope(rg)
+            except MeshError as e:
+                if rg:
+                    raise MeshError(f"Region konnte nicht gesetzt werden ({e})")
+            await self._cmd(bytes([3, 0, idx]) + struct.pack("<I", ts) + m["text"].encode())
+            m["status"] = "sent"
+            asyncio.get_running_loop().call_later(ECHO_S, self._echo_timeout, conv, m)
+        except MeshError as e:
+            m["status"], m["err"] = "fail", str(e)
+        self.update_msg(conv, m)
+
+    def _echo_timeout(self, conv, m):
+        """Kanal: kein Repeater hat die Nachricht weitergeleitet."""
+        if m.get("status") == "sent" and not m.get("repeats"):
+            m["status"] = "noack"
+            self.update_msg(conv, m)
+
     async def send_direct(self, conv: str, m: dict):
         prefix = bytes.fromhex(conv[2:])
         m["status"] = "sending"
+        m.pop("err", None)
         self.update_msg(conv, m)
         try:
             await self.apply_scope("")
         except MeshError:
             pass
+        dst, src = conv[2:4], (self.self or {}).get("key", "")[:2]
+        self._watch_echo(conv, m, 2, lambda p: p["dec"].get("dst") == dst and p["dec"].get("src") == src)
         try:
             ev = await self._cmd(
                 bytes([2, 0, m.get("attempt", 0) & 255]) + struct.pack("<I", m["ts"] // 1000) + prefix + m["text"].encode(),
@@ -1016,12 +1159,42 @@ class Mesh:
             m["rtt"] = ev.payload.get("trip_time")
             self.update_msg(conv, m)
 
+    def _watch_echo(self, conv, m, ptype, check):
+        """Eigene Nachricht beobachten: Weiterleitungen durch Repeater zählen (wie „gehört“ in den Apps).
+        check erkennt das erste Echo, danach zählt die Paket-Prüfsumme (bleibt unterwegs gleich)."""
+        t = now_ms()
+        self.echoes = [e for e in self.echoes if e["until"] > t and e["m"] is not m]
+        m["repeats"] = []
+        self.echoes.append({"conv": conv, "m": m, "ptype": ptype, "check": check, "until": t + ECHO_S * 1000, "pkh": None})
+
+    def _on_echo(self, p):
+        pkh = None
+        for e in self.echoes:
+            if e["ptype"] != p["ptype"] or e["until"] < p["t"]:
+                continue
+            pkh = pkh or packet_hash(p["ptype"], p["_payload"])
+            if e["pkh"] != pkh and (e["pkh"] or not e["check"](p)):
+                continue
+            e["pkh"] = pkh
+            m = e["m"]
+            # Flood: letzter Eintrag im Pfad ist der Repeater, von dem wir das Echo hören.
+            # Direkt geroutet kürzt jeder Repeater den Pfad, dort ist der Absender nicht erkennbar.
+            h = p["path"][-1] if p["route"] in (0, 1) and p["path"] else None
+            if h and any(r["h"] == h for r in m["repeats"]):
+                return
+            m["repeats"].append({"h": h, "name": self._hop_name(h) if h else None, "snr": p["snr"],
+                                 "rssi": p["rssi"], "hops": p["hopCount"], "t": p["t"]})
+            self.update_msg(e["conv"], m)
+            return
+
     async def retry_msg(self, conv: str, mid: str):
         m = next((x for x in self.msgs.get(conv, []) if x["id"] == mid), None)
         if not m:
             raise MeshError("Nachricht nicht gefunden")
+        if not self.connected:
+            raise MeshError("nicht verbunden")
         m["attempt"] = (m.get("attempt") or 0) + 1
-        await self.send_direct(conv, m)
+        await (self.send_channel if conv.startswith("ch:") else self.send_direct)(conv, m)
 
     # ================= Live-Traffic =================
     def _on_rx_log(self, ev):
@@ -1075,6 +1248,18 @@ class Mesh:
             rs = self._region_stat(p)
         if p["ptype"] in (5, 6) and p.get("_payload"):
             cs = self._on_group_packet(p)
+        if p["path"] and p["ptype"] != 9:
+            res = self.resolve_path(p["path"], d if p["ptype"] == 4 else None, self.self)
+            p["res"] = [[r["key"], r["n"]] for r in res]  # je Hop: Schlüssel (oder null) und Anzahl Kandidaten
+            for r in res:
+                if r["key"] and r["n"] == 1:
+                    self.hop_seen[r["key"]] = p["t"]
+                    if self.watch:
+                        self._watch_heard(r["key"], p["t"])
+        if node and self.watch:
+            self._watch_heard(node["key"], p["t"])
+        if self.echoes and p["ptype"] in (2, 5) and p.get("_payload"):
+            self._on_echo(p)
         self.packets.append(p)
         del self.packets[:-MAX_PKTS]
         self._new_packets.append(self._packet_row(p, nb[0] if nb else None))
@@ -1138,20 +1323,20 @@ class Mesh:
             return round(hav(me["lat"], me["lon"], n["lat"], n["lon"]), 1) if me and has_pos(n) else None
 
         def by_hash(h):
-            """Knoten zu einem Hop-Hash – nur wenn eindeutig."""
-            l = [n for n in self.nodes.values() if n["key"].startswith(h)]
-            return l[0] if len(l) == 1 else None
+            """Knoten zu einem Hop-Hash, bei mehreren Kandidaten der nächstgelegene (guess)."""
+            r = self.resolve_path([h], None, self.self)[0]
+            return (self.nodes.get(r["key"]) if r["key"] else None), r
 
         for n in st["neighbors"]:
-            nd = by_hash(n["hash"])
-            n["name"] = self._node_name(n["hash"])
+            nd, r = by_hash(n["hash"])
+            n["name"], n["guess"] = r["name"], r["guess"]
             n["km"] = km(nd) if nd else None
             n["type"] = nd.get("type") if nd else None
         for n in st["nodesTop"]:
             n["km"] = km(self.nodes.get(n["key"]) or {})
             n["type"] = (self.nodes.get(n["key"]) or {}).get("type")
-        st["repeaters"] = [{"hash": h, "count": c, "name": self._node_name(h),
-                            "type": (by_hash(h) or {}).get("type")} for h, c in st["repeaters"]]
+        st["repeaters"] = [{"hash": h, "count": c, "name": r["name"], "guess": r["guess"], "type": (nd or {}).get("type")}
+                           for h, c in st["repeaters"] for nd, r in [by_hash(h)]]
         types: dict = {}
         for k in st.pop("srcs"):
             t = (self.nodes.get(k) or {}).get("type")
@@ -1167,9 +1352,85 @@ class Mesh:
         st["msgs"] = self.store.msg_stats(dev, since) if dev else {"convs": [], "dm": {}, "rttAvg": None, "senders": []}
         for c in st["msgs"]["convs"]:
             c["title"] = self._conv_title(c["conv"])
+        st["collisions"] = self.hash_collisions(min(since, now - 3 * 86400000))
+        st.update(self.route_stats(since))
         st.update(hours=hours, since=since, retentionDays=self.packet_days, radio=self.self and
                   {k: self.self.get(k) for k in ("sf", "bw", "cr", "freq")})
         return st
+
+    def replay(self, hours: float) -> dict:
+        """Wege der empfangenen Pakete für die Wiedergabe auf der Karte: [t, Typ, [[lat, lon], …]].
+        Nur Empfänge, deren Weg mindestens zwei bekannte Punkte hat; Wege werden je Pfad nur einmal aufgelöst."""
+        self._flush()
+        now = now_ms()
+        hours = max(0.25, min(hours, 7 * 24))
+        since = now - int(hours * 3600000)
+        me = self.self if has_pos(self.self) else None
+        cache, items = {}, []
+        rows = self.store.replay_rows(since, now, REPLAY_MAX)
+        for t, ptype, src, path in rows:
+            start = self.nodes.get(src) if ptype == 4 and src else None
+            k = (start and start["key"], path)
+            if k not in cache:
+                pts, _ = self._path_points(start or {}, path or "", me)
+                cache[k] = [[round(p[0], 5), round(p[1], 5)] for p in pts] if len(pts) >= 2 else None
+            if cache[k]:
+                items.append([t, ptype, cache[k]])
+        return {"since": since, "until": now, "items": items, "truncated": len(rows) >= REPLAY_MAX}
+
+    def route_stats(self, since: int) -> dict:
+        """Häufigste Pfade und Funkverbindungen (Knoten → Knoten entlang aufgelöster Pfade, mit Entfernung)."""
+        me = self.self if has_pos(self.self) else None
+        paths: dict = {}
+        links: dict = {}
+        for src, path, uniq, cnt, snr, last in self.store.route_rows(since):
+            if path:
+                p = paths.setdefault(path, [0, 0, 0.0, 0])
+                p[0] += uniq
+                p[1] += cnt
+                p[2] += (snr or 0) * cnt
+                p[3] = max(p[3], last)
+            start = self.nodes.get(src) if src else None
+            res = self.resolve_path((path or "").split(), start, me)
+            chain = ([(start, False)] if src else [(None, False)]) + \
+                [(self.nodes.get(r["key"]) if r["key"] else None, r["guess"]) for r in res] + [(me and self.self, False)]
+            for (a, ga), (b, gb) in zip(chain, chain[1:]):
+                if not (a and b and has_pos(a) and has_pos(b)) or a.get("key") == b.get("key"):
+                    continue
+                k = tuple(sorted((a["key"], b["key"])))
+                l = links.setdefault(k, {"a": a, "b": b, "count": 0, "guess": True, "last": 0})
+                l["count"] += uniq
+                l["guess"] = l["guess"] and (ga or gb)  # sicher, sobald einmal eindeutig zugeordnet
+                l["last"] = max(l["last"], last)
+
+        def pt(n):
+            return {"key": n["key"], "name": n.get("name") or n["key"][:8], "lat": n["lat"], "lon": n["lon"]}
+        lk = [{"a": pt(l["a"]), "b": pt(l["b"]), "count": l["count"], "guess": l["guess"], "last": l["last"],
+               "km": round(hav(l["a"]["lat"], l["a"]["lon"], l["b"]["lat"], l["b"]["lon"]), 1)} for l in links.values()]
+        top = sorted(paths.items(), key=lambda x: -x[1][0])[:20]
+        return {
+            "topPaths": [{"path": p, "count": u, "recv": c, "snr": s / c if c else None, "last": t,
+                          "names": [(r["name"] or r["h"]) + ("?" if r["guess"] else "") for r in self.resolve_path(p.split(), None, me)]}
+                         for p, (u, c, s, t) in top],
+            "longest": sorted(lk, key=lambda l: -l["km"])[:20],
+            "links": sorted(lk, key=lambda l: -l["count"])[:150],
+        }
+
+    def hash_collisions(self, since: int) -> dict:
+        """Weiterleitende Knoten (seit `since` gehört), die sich einen Hop-Hash teilen – je Hash-Größe 1, 2, 3 Byte.
+        Auf solchen Hops ist im Pfad nicht zu erkennen, welcher Repeater weitergeleitet hat."""
+        me = self.self if has_pos(self.self) else None
+        act = [n for n in self.nodes.values() if n.get("type") in FWD and self.node_last(n["key"]) >= since]
+        out = {"active": len(act), "since": since, "mode": (self.dev or {}).get("pathHashMode")}
+        for b in (1, 2, 3):
+            g: dict = {}
+            for n in act:
+                g.setdefault(n["key"][:2 * b], []).append(n)
+            out[f"b{b}"] = [{"hash": h, "nodes": [
+                {"key": n["key"], "name": n.get("name"), "type": n.get("type"), "last": self.node_last(n["key"]),
+                 "km": round(hav(me["lat"], me["lon"], n["lat"], n["lon"]), 1) if me and has_pos(n) else None}
+                for n in l]} for h, l in sorted(g.items()) if len(l) > 1]
+        return out
 
     def node_stats(self, key: str | None, hash_: str | None, hours: float) -> dict:
         """Details zu einem Knoten (Schlüssel bekannt) oder nur zu einem Hop-Hash."""
@@ -1193,24 +1454,27 @@ class Mesh:
                   km=round(hav(me["lat"], me["lon"], node["lat"], node["lon"]), 1) if me and has_pos(node) else None,
                   names=self._node_name(hashes[0]), bucketMs=size, start=start, since=since, hours=hours)
         for p in st["paths"]:
-            p["names"] = [self._node_name(h) or h for h in p["path"].split()]
+            p["names"] = [(r["name"] or r["h"]) + ("?" if r["guess"] else "") for r in self.resolve_path(p["path"].split(), node, me)]
             p["points"], p["unresolved"] = self._path_points(node, p["path"], me)
         st["me"] = [me["lat"], me["lon"], me.get("name") or "ich"] if me else None
+        # Namen zu Hop-Hashes: Nachbarn im Netz liegen nahe am Knoten, direkte Nachbarn nahe bei uns
+        st["peers"] = [{"hash": h, "out": a, "in": b, "name": self._near_name(h, node)} for h, a, b in st["peers"]]
+        st["via"] = [{"hash": h, "count": c, "snr": s, "name": self._hop_name(h) if h else None} for h, c, s in st["via"]]
         return st
 
+    def _near_name(self, h: str, near: dict):
+        r = self.resolve_path([h], near if has_pos(near) else None, None if has_pos(near) else self.self)[0]
+        return r["name"] and r["name"] + ("?" if r["guess"] else "")
+
     def _path_points(self, start: dict, path: str, me: dict | None):
-        """Koordinaten eines Weges: Start-Knoten → Hops (über ihre Hashes) → eigene Node.
-        Mehrdeutige Hashes: der Kandidat, der dem vorigen Punkt am nächsten liegt."""
+        """Koordinaten eines Weges: Start-Knoten → Hops (über ihre Hashes) → eigene Node."""
         pts, unres = [], 0
         if has_pos(start):
             pts.append([start["lat"], start["lon"], start.get("name") or "?"])
-        for h in path.split():
-            cands = [n for n in self.nodes.values() if n["key"].startswith(h) and has_pos(n)]
-            if len(cands) > 1 and pts:
-                cands.sort(key=lambda n: hav(pts[-1][0], pts[-1][1], n["lat"], n["lon"]))
-            if cands and (len(cands) == 1 or pts):
-                n = cands[0]
-                pts.append([n["lat"], n["lon"], (n.get("name") or h) + (" (mehrdeutig)" if len(cands) > 1 else "")])
+        for r in self.resolve_path(path.split(), start, me):
+            n = self.nodes.get(r["key"]) if r["key"] else None
+            if has_pos(n):
+                pts.append([n["lat"], n["lon"], (n.get("name") or r["h"]) + (" (vermutet)" if r["guess"] else "")])
             else:
                 unres += 1
         if me:
@@ -1225,6 +1489,16 @@ class Mesh:
             return "#" + conv[5:] + " (gehört)"
         c = self._contact_by_prefix(conv[2:])
         return c["name"] if c else self._node_name(conv[2:]) or conv[2:]
+
+    def get_packet(self, pid: int) -> dict:
+        """Ein Paket für Direktlinks (#live/<id>) – auch, wenn es nicht mehr im Live-Traffic ist."""
+        p = next((public(p) for p in reversed(self.packets) if p["id"] == pid), None)
+        if not p:
+            self._flush()
+            p = self.store.get_packet(pid)
+        if not p:
+            raise MeshError("Paket nicht gefunden (älter als die Aufbewahrung?)")
+        return p
 
     def clear_packets(self):
         """Live-Ansicht leeren; der gespeicherte Verlauf für die Statistik bleibt."""

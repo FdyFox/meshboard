@@ -102,6 +102,10 @@ class Store:
         rows = self.db.execute("SELECT data FROM packets WHERE t>=? ORDER BY id DESC LIMIT ?", (since, limit)).fetchall()
         return [json.loads(d) for (d,) in reversed(rows)]
 
+    def get_packet(self, pid: int) -> dict | None:
+        row = self.db.execute("SELECT data FROM packets WHERE id=?", (pid,)).fetchone()
+        return json.loads(row[0]) if row else None
+
     def packets_missing(self, limit=5000) -> list:
         """Pakete ohne Paket-Hash oder Sendezeit (aus der Zeit vor diesen Spalten)."""
         return self.db.execute("SELECT id, len, data FROM packets WHERE ph IS NULL OR air IS NULL LIMIT ?", (limit,)).fetchall()
@@ -110,6 +114,18 @@ class Store:
         """rows: (ph, air, path, id)"""
         self.db.executemany("UPDATE packets SET ph=COALESCE(ph, ?), air=COALESCE(air, ?), path=COALESCE(path, ?) WHERE id=?", rows)
         self.db.commit()
+
+    def replay_rows(self, since: int, until: int, limit: int) -> list:
+        """Empfänge mit Pfad (oder Adverts) im Zeitraum, für die Wiedergabe auf der Karte."""
+        return self.db.execute(
+            "SELECT t, ptype, src, path FROM packets WHERE t >= ? AND t < ? AND ptype != 9 "
+            "AND (hops > 0 OR ptype = 4) ORDER BY t LIMIT ?", (since, until, limit)).fetchall()
+
+    def route_rows(self, since: int) -> list:
+        """Je Absender (nur Adverts) und Pfad: eindeutige Pakete, Empfänge, Ø SNR, zuletzt."""
+        return self.db.execute(
+            "SELECT CASE WHEN ptype=4 THEN src END, path, COUNT(DISTINCT COALESCE(ph, id)), COUNT(*), AVG(snr), MAX(t) "
+            "FROM packets WHERE t>=? AND ptype<>9 AND (hops>0 OR ptype=4) GROUP BY 1, 2", (since,)).fetchall()
 
     def max_packet_id(self) -> int:
         return self.db.execute("SELECT COALESCE(MAX(id), 0) FROM packets").fetchone()[0]
@@ -182,6 +198,17 @@ class Store:
         b = [{"adverts": 0, "direct": 0, "relayed": 0, "snr": []} for _ in range(n)]
         idx = lambda t: (t - start) // size
         adverts, paths, seen = [], {}, set()
+        hours: dict = {}   # Aktivität je Stunde (Adverts, direkter Empfang, Weiterleitungen)
+        peers: dict = {}   # Hop-Hashes, die im Netz direkt neben dem Knoten liegen
+        via: dict = {}     # direkte Nachbarn, über die seine Adverts bei uns ankommen
+        snrs = []
+
+        def act(t):
+            hours[t // 3600000] = hours.get(t // 3600000, 0) + 1
+
+        def peer(h, side):
+            e = peers.setdefault(h, [0, 0])  # [vom Knoten weg, zum Knoten hin]
+            e[side] += 1
         if key:
             for t, hops, path, snr, rssi, ph, region in self.db.execute(
                     "SELECT t, hops, path, snr, rssi, ph, region FROM packets WHERE src=? AND t>=? ORDER BY t DESC", (key, since)):
@@ -191,12 +218,21 @@ class Store:
                         b[idx(t)]["adverts"] += 1
                     if len(adverts) < 25:
                         adverts.append({"t": t, "hops": hops, "path": path, "snr": snr, "rssi": rssi, "region": region})
+                    act(t)
+                    if path:
+                        peer(path.split()[0], 0)  # erster Repeater hat das Advert direkt gehört
+                v = via.setdefault(path.split()[-1] if path else "", [0, 0.0])
+                v[0] += 1
+                v[1] += snr or 0
                 p = paths.setdefault(path or "", {"path": path or "", "count": 0, "snr": 0.0})
                 p["count"] += 1
                 p["snr"] += snr or 0
         q = ",".join("?" * len(hs)) or "''"
         direct = self.db.execute(f"SELECT t, snr, rssi FROM packets WHERE t>=? AND nb IN ({q})", (since, *hs)).fetchall()
         for t, snr, _ in direct:
+            act(t)
+            if snr is not None:
+                snrs.append(snr)
             if 0 <= idx(t) < n:
                 b[idx(t)]["direct"] += 1
                 b[idx(t)]["snr"].append(snr)
@@ -207,9 +243,20 @@ class Store:
             if hs & set(path.split()) and (ph is None or ph not in rel_seen):
                 rel_seen.add(ph)
                 relayed += 1
+                act(t)
+                p = path.split()
+                i = next(i for i, h in enumerate(p) if h in hs)
+                if i > 0:
+                    peer(p[i - 1], 1)  # hat das Paket an den Knoten weitergegeben
+                if i + 1 < len(p):
+                    peer(p[i + 1], 0)  # hat es vom Knoten bekommen
                 if 0 <= idx(t) < n:
                     b[idx(t)]["relayed"] += 1
         avg = lambda l: sum(l) / len(l) if l else None
+        dist: dict = {}  # SNR direkter Empfänge in Stufen zu 2,5 dB (wie in packet_stats)
+        for s in snrs:
+            k = int((s + 100) // 2.5) * 2.5 - 100
+            dist[k] = dist.get(k, 0) + 1
         span = self.db.execute(f"SELECT MIN(t), MAX(t) FROM packets WHERE src=? OR nb IN ({q})", (key or "", *hs)).fetchone()
         return {
             "adverts": len(seen), "direct": len(direct), "relayed": relayed,
@@ -219,6 +266,10 @@ class Store:
             "paths": sorted(({"path": p["path"], "count": p["count"], "snr": p["snr"] / p["count"]} for p in paths.values()),
                             key=lambda p: -p["count"])[:10],
             "recent": adverts,
+            "hourly": sorted(hours.items()),
+            "snrDist": sorted(dist.items()),
+            "peers": sorted(([h, a, b] for h, (a, b) in peers.items() if h not in hs), key=lambda x: -(x[1] + x[2]))[:15],
+            "via": sorted(([h, c, s / c] for h, (c, s) in via.items()), key=lambda x: -x[1])[:10],
         }
 
     def msg_stats(self, dev: str, since: int) -> dict:

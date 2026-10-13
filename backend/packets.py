@@ -134,6 +134,70 @@ def decode_payload(ptype: int, b: bytes, chan_by_hash: dict) -> dict:
     return d
 
 
+def packet_layout(raw: bytes) -> list:
+    """Abschnitte eines Pakets für die Byte-Ansicht: [[Bezeichnung, Start, Ende], …] (Ende exklusiv)."""
+    out = []
+
+    def seg(label, a, n):
+        n = max(0, min(n, len(raw) - a))
+        if n:
+            out.append([label, a, a + n])
+        return a + n
+    if not raw:
+        return out
+    route, ptype = raw[0] & 3, (raw[0] >> 2) & 15
+    o = seg(f"Header: {ROUTES[route]}, {PT[ptype]}, v{(raw[0] >> 6) + 1}", 0, 1)
+    if route in (0, 3):
+        o = seg("Transport-Codes (Region)", o, 4)
+    if o >= len(raw):
+        return out
+    pl = raw[o]
+    hs, hops = (pl >> 6) + 1, pl & 63
+    o = seg(f"Pfadlänge: {hops} Hop{'' if hops == 1 else 's'} à {hs} Byte", o, 1)
+    if ptype == 9:
+        o = seg("SNR je Hop (×4)", o, hops)
+    else:
+        for i in range(hops):
+            o = seg(f"Hop {i + 1}", o, hs)
+    if ptype == 4:
+        fl = raw[o + 100] if o + 100 < len(raw) else 0
+        o = seg("Public Key", o, 32)
+        o = seg("Zeitstempel", o, 4)
+        o = seg("Signatur", o, 64)
+        o = seg("Flags (Typ, Position, Name)", o, 1)
+        if fl & 0x10:
+            o = seg("Breite / Länge", o, 8)
+        if fl & 0x20:
+            o = seg("Feature 1", o, 2)
+        if fl & 0x40:
+            o = seg("Feature 2", o, 2)
+        if fl & 0x80:
+            o = seg("Name", o, len(raw) - o)
+    elif ptype == 3:
+        o = seg("ACK-Prüfsumme", o, 4)
+    elif ptype in (0, 1, 2, 8):
+        o = seg("Ziel-Hash", o, 1)
+        o = seg("Quell-Hash", o, 1)
+        o = seg("MAC", o, 2)
+        o = seg("Verschlüsselt", o, len(raw) - o)
+    elif ptype == 7:
+        o = seg("Ziel-Hash", o, 1)
+        o = seg("Public Key des Absenders", o, 32)
+        o = seg("MAC", o, 2)
+        o = seg("Verschlüsselt", o, len(raw) - o)
+    elif ptype in (5, 6):
+        o = seg("Kanal-Hash", o, 1)
+        o = seg("MAC", o, 2)
+        o = seg("Verschlüsselt", o, len(raw) - o)
+    elif ptype == 9:
+        o = seg("Trace-Tag", o, 4)
+        o = seg("Auth-Code", o, 4)
+        o = seg("Flags", o, 1)
+        o = seg("Hop-Hashes der Route", o, len(raw) - o)
+    seg("Nutzdaten", o, len(raw) - o)
+    return out
+
+
 def region_key(name: str) -> bytes:
     """Schlüssel einer Region: SHA-256('#name'), erste 16 Byte."""
     return hashlib.sha256(("#" + name.lstrip("#")).encode()).digest()[:16]
