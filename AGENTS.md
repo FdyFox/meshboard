@@ -20,19 +20,20 @@ Sprache: UI-Texte, Fehlermeldungen, Kommentare, Commit-Messages und README auf *
 | `backend/api.py` | FastAPI: REST unter `/api/…`, WebSocket `/api/ws`, statische Auslieferung von `frontend/` |
 | `backend/__main__.py` | Start mit `python -m backend [node]`, Konfiguration über CLI und Umgebungsvariablen |
 | `frontend/index.html`, `css/app.css` | Oberfläche |
-| `frontend/js/` | ES-Module ohne Build: `main.js` (Events→Zustand, Verdrahtung), `state.js` (Client-Zustand `S`, Render-Steuerung, `actions`), `api.js` (REST/WebSocket), `util.js`, je ein Modul pro Tab (`live`, `stats`, `chat`, `map`, `contacts`, `device`) |
+| `frontend/js/` | ES-Module ohne Build: `main.js` (Events→Zustand, Verdrahtung), `state.js` (Client-Zustand `S`, Render-Steuerung, `actions`), `api.js` (REST/WebSocket), `util.js`, je ein Modul pro Tab (`live`, `stats`, `chat`, `map`, `contacts`, `device`), `search.js` (globale Suche) |
 | `tests/` | pytest: `test_packets.py` (Unit), `test_e2e.py` (Server gegen Simulator), `fake_companion.py` (simulierter TCP-Companion) |
 
 ## Architektur und Datenfluss
 
 - Der **Server ist der einzige Client der Node.** Er bleibt verbunden, auch ohne offenen Browser, und verbindet nach einem Abbruch automatisch neu (`Mesh._supervisor`).
 - **Logik gehört ins Backend:** Protokoll, Parsing, Zustand, Persistenz und Entscheidungen. Das Frontend formatiert und zeigt an. Nur browserlokale Dinge bleiben im Frontend: aktiver Chat, ungelesene Zähler, Pause/Filter im Live-Traffic, Desktop-Benachrichtigungen, Kartenstil (`localStorage`, Präfix `mcw.`).
-- **Server→Browser:** Beim Verbinden schickt der WebSocket ein `snapshot`-Event, danach Events wie `status`, `packet`, `msg`, `contact`, `contact_del`, `node`, `nodes`, `contacts`, `channels`, `settings`, `packets`, `packets_clear`, `msgs`, `toast`, `log`. Erzeugt werden sie in `Mesh.emit()`, verarbeitet in `frontend/js/main.js` (`handlers`). Ein neues Event braucht beide Seiten.
+- **Server→Browser:** Beim Verbinden schickt der WebSocket ein `snapshot`-Event, danach Events wie `status`, `packet`, `msg`, `contact`, `contact_del`, `node`, `nodes`, `contacts`, `channels`, `settings`, `packets`, `packets_clear`, `msgs`, `toast`, `log`, `watch_alert`. Erzeugt werden sie in `Mesh.emit()`, verarbeitet in `frontend/js/main.js` (`handlers`). Ein neues Event braucht beide Seiten.
 - **Browser→Server:** REST-Aufrufe über `run(path, body, okMsg, method)` in `api.js`. Fehler kommen als HTTP 400 mit `{"detail": "deutsche Meldung"}` (Exception `MeshError`) und erscheinen als Toast.
 - **Gerätebefehle** laufen immer über `Mesh._lib(name, …)` (Methode der meshcore-Bibliothek) oder `Mesh._cmd(bytes, expect)` (roher Befehl). Beide serialisieren über `self.lock`, und es läuft immer nur ein Befehl. Fehlercodes werden zu deutschen Meldungen (`ERRS`).
 - **Event-Handler der Bibliothek** (`Mesh._subscribe`) sind bewusst **synchron**. Nur so bleibt die Reihenfolge erhalten (Funkpaket vor der zugehörigen Nachricht, nötig für die Region-Zuordnung in `_find_rx_packet`). Wer aus einem Handler einen Gerätebefehl braucht, startet ihn mit `self.spawn(...)`. Ein `await` im Handler ist verboten.
 - **Regionen und Räume** lassen sich nicht zurückrechnen, nur gegen Namen prüfen. Der Regions-Code ist ein HMAC über den Paketinhalt und darum bei jedem Paket anders. Statistiken deshalb pro Region, nicht pro Code. Gehörte Räume (nicht auf dem Gerät) laufen als Unterhaltung `room:<name>`. Beim Abonnieren bzw. wenn der Kanal auf dem Gerät auftaucht, verschiebt `Mesh._merge_room` den Verlauf nach `ch:<idx>`.
 - Die Protokoll-Konstanten stammen aus MeshCore `examples/companion_radio`. Was die Bibliothek nicht passend anbietet, wird roh gesendet (Scope/Region, Hash-Modus, Nachrichten senden, `SET_OTHER`). Das Format muss zum bisherigen Verhalten passen: Regionsname ohne `#` und Schlüssel `sha256('#'+name)[:16]`.
+- **Hop-Hashes** ordnet `Mesh.resolve_path` Knoten zu (Repeater bevorzugt, bei Mehrdeutigkeit kürzester plausibler Weg). Pakete tragen das Ergebnis als `res` (`[Schlüssel|null, Kandidaten]` je Hop), im Frontend über `hopInfo(p, i)`. Keine eigene Auflösung per Hash im Frontend bauen.
 - Buttons in generiertem HTML nutzen `data-act="name"` plus `data-…`-Attribute. Die Funktion liegt in `actions` (`state.js`), ein globaler Klick-Handler ruft sie auf. Keine Inline-`onclick`, denn ES-Module haben keine globalen Funktionen.
 
 ## Code-Stil

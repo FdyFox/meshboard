@@ -1,5 +1,18 @@
 # Changelog
 
+## Unveröffentlicht
+
+- Chat: Repeater-Zähler für eigene Nachrichten. Grauer Haken = gesendet ohne Rückmeldung, grüner Haken mit Zahl = so viele Repeater wurden beim Weiterleiten gehört (Klick zeigt Namen und SNR)
+- Chat: Kanalnachrichten, die nach 60 s kein Repeater weitergeleitet hat, lassen sich erneut senden
+- Statistik › Knoten: Hash-Kollisionen (aktive Repeater mit gleichem Hop-Hash bei 1, 2 und 3 Byte), Hinweis in der Übersicht
+- Knoten beobachten: Meldung, wenn ein Knoten länger als die Schwelle nicht gehört wurde und wenn er wieder da ist
+- Live-Traffic: Rohdaten farbig nach Abschnitten aufgeschlüsselt, Direktlink auf Pakete (`#live/<id>`, auch ältere aus dem Verlauf)
+- Karte: Pakete live animieren, Wiedergabe der letzten 1 h bis 3 Tage im Zeitraffer
+- Globale Suche (Strg+K oder /) über Knoten, Kontakte, Kanäle, Räume und Nachrichten
+- Knoten-Details: Ankunft über welche Nachbarn, Nachbarn im Netz, Aktivität nach Wochentag × Uhrzeit, SNR-Verteilung
+- Statistik › Routen: Funkverbindungen auf der Karte, häufigste Pfade, weiteste Verbindungen
+- Mehrdeutige Hop-Hashes werden nach Lage zugeordnet (kürzester plausibler Weg, Repeater bevorzugt) – in Live-Traffic, Karte, Statistik und Schnellantwort `{km}`
+
 ## 0.1.0
 
 Erste Version von Meshboard.

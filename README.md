@@ -4,22 +4,26 @@
 
 ## Funktionen
 
-- **Live-Traffic** – alle empfangenen Pakete mit Typ, Route, Hop-Pfad (Pfad-Hash-Größe 1/2/3 Byte), SNR/RSSI und Region. Dazu Filter, Detailansicht mit Rohdaten, CSV/JSON-Export und Pakete pro Minute.
+- **Live-Traffic** – alle empfangenen Pakete mit Typ, Route, Hop-Pfad (Pfad-Hash-Größe 1/2/3 Byte), SNR/RSSI und Region. Dazu Filter, Detailansicht mit farbig aufgeschlüsselten Rohdaten (Header, Pfad, Schlüssel, MAC …), Direktlink auf jedes Paket (`#live/<id>`), CSV/JSON-Export und Pakete pro Minute.
 - **Statistik** – Der Server speichert alle empfangenen Pakete und alle 5 Minuten die Gerätewerte, standardmäßig ein Jahr lang. Zeiträume: die letzten 24 Stunden, 7, 30 oder 90 Tage oder das letzte Jahr. Unterseiten:
   - **Übersicht:** Kennzahlen mit Vergleich zum Vorzeitraum und automatische Hinweise, etwa zu hoher Kanalbelegung, Duty-Cycle, steigendem Rauschen oder Knoten mit zu vielen Adverts.
   - **Funk & Gerät:** Rauschpegel, eigene Sendezeit mit dem gesetzlichen Duty-Cycle-Grenzwert, Empfangs-SNR, Batterie und Gerätezähler.
   - **Netz:** Kanalbelegung, Empfänge je Paket, Routen, Pakettypen, Hops, Pfad-Hash-Größe, Regionen und Aktivität nach Wochentag × Uhrzeit.
-  - **Knoten:** aktive Knoten, Knotentypen, direkte Nachbarn mit Entfernung, Repeater-Last, neue Knoten und Advert-Häufigkeit. Ein Klick auf einen Knoten öffnet Details: Empfangsqualität, Weiterleitungen, Adverts, die Wege seiner Adverts auf einer Karte und die letzten Adverts. Direktlink: `#stats/nodes?node=<Schlüssel>`.
+  - **Knoten:** aktive Knoten, Knotentypen, direkte Nachbarn mit Entfernung, Repeater-Last, beobachtete Knoten, Hash-Kollisionen (Repeater mit gleichem Hop-Hash bei 1, 2 und 3 Byte), neue Knoten und Advert-Häufigkeit. Ein Klick auf einen Knoten öffnet Details: Empfangsqualität, Weiterleitungen, Adverts, die Wege seiner Adverts auf einer Karte, über welche Nachbarn er bei dir ankommt, seine Nachbarn im Netz, Aktivität nach Wochentag × Uhrzeit, SNR-Verteilung und die letzten Adverts. Direktlink: `#stats/nodes?node=<Schlüssel>`.
+  - **Routen:** alle Funkverbindungen zwischen Knoten auf einer Karte, häufigste Pfade und weiteste Verbindungen.
   - **Nachrichten:** Kanalverkehr, Unterhaltungen, aktivste Absender, Zustellquote und Laufzeit der Direktnachrichten.
 
   Nach einem Neustart ist der Live-Traffic wieder da.
-- **Chat** – Kanäle und Direktnachrichten, Zustellbestätigung mit Laufzeit, erneut senden, Antworten per `@[Name]`, Direktnachricht an den Absender.
+- **Chat** – Kanäle und Direktnachrichten, Zustellbestätigung mit Laufzeit, Repeater-Zähler für gesendete Nachrichten (grauer Haken = gesendet, grün mit Zahl = so viele Repeater haben weitergeleitet), erneut senden ohne Bestätigung, Antworten per `@[Name]`, Direktnachricht an den Absender.
   - **Schnellantwort ✓** an empfangenen Nachrichten, mit eigener Vorlage und Vorschau unter Gerät › App, z. B. `@[{name}] | received in 66346 at {time} | {hops} hops ({path}) | {km} km`. Zahlen mit Dezimalpunkt, Platzhalter auch englisch (`{time} {path} {segs} {noloc} {latency}`). Platzhalter: `{name}`, `{zeit}`, `{hops}` (Zahl), `{pfad}` (Hop-Hashes, bei Platzmangel gekürzt), `{km}` (Strecke entlang des Weges über Knoten mit bekannter Position), `{abschnitte}`, `{ohne_pos}`, `{snr}`, `{laufzeit}` (Sekunden seit dem Absenden laut Absender-Uhr), `{region}`.
   - **Ungelesen-Badges** an jeder Unterhaltung. Die **Benachrichtigung** (Badge am Tab „Chat“, Desktop-Meldung) ist pro Kanal oder Kontakt einstellbar: alle Nachrichten, nur Erwähnungen (`@[Name]`) oder aus. Gehörte, nicht abonnierte Räume benachrichtigen nie.
+- **Knoten beobachten** – im Detailfenster eines Knotens oder auf der Karte („👁 Beobachten“) mit Schwelle in Stunden. Der Server meldet, wenn der Knoten so lange nicht gehört wurde (eigenes Advert oder eindeutig als Hop im Pfad) und wenn er wieder da ist, als Hinweis und Desktop-Meldung.
+- **Hops zuordnen** – Teilen sich mehrere Knoten einen Hop-Hash, bevorzugt der Server Repeater und Room-Server und wählt die Kombination mit dem kürzesten plausiblen Weg (Absender → Hops → eigene Node). Vermutete Zuordnungen sind mit „?“ bzw. gestricheltem Rahmen markiert.
 - **Regionen** – Standard-Region des Geräts und Region **pro Kanal**. Empfangene Nachrichten zeigen ihre Region und Hash-Größe. Unbekannte Regionen erkennt der Server über eine eingebaute Namensliste (SaarLorLux, Länder, Großstädte).
 - **Hashtag-Räume entdecken** – Räume wie `#technik`, die im Netz gehört werden, aber nicht auf dem Gerät eingerichtet sind, erkennt der Server über die Namensliste oder über eigene Namen („#Raum suchen“ im Chat). Er liest sie mit. Mit einem Klick richtest du einen Raum auf dem Gerät ein, der Verlauf wird übernommen.
 - **Im Netz gehört** – Übersicht, welche Regionen und Kanäle wie oft und von welchen Knoten gehört wurden.
-- **Karte** – Companions, Repeater, Room-Server und Sensoren mit Standort aus Adverts. Dazu Nachbar-Linien nach SNR, Paketpfad auf der Karte und eigene Position per Klick.
+- **Karte** – Companions, Repeater, Room-Server und Sensoren mit Standort aus Adverts. Dazu Nachbar-Linien nach SNR, Paketpfad auf der Karte und eigene Position per Klick. Neue Pakete können live als Linie entlang ihres Weges laufen; die **Wiedergabe** spielt die letzten 1 h bis 3 Tage im Zeitraffer ab.
+- **Suche** – `Strg+K` oder `/`: Knoten (auch per Hash), Kontakte, Kanäle, Räume und Nachrichten.
 - **Adverts** – Zero-Hop und Flood.
 - **Kontakte** – speichern, löschen, teilen, Pfad zurücksetzen, Entfernung.
 - **Gerät** – Verbindung, Name, Position, TX-Leistung, Pfad-Hash-Größe, Batterie, Rauschpegel, Airtime, Paketstatistik, Neustart, Protokoll-Log.
