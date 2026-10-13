@@ -144,7 +144,7 @@ Die Tests starten den Server gegen einen simulierten Companion und brauchen kein
 
 ### Releases
 
-Jeder Push auf `main` testet den Stand und veröffentlicht das Image `:test` (Workflow `.github/workflows/container.yml`). Für ein Release:
+Jeder Push auf `main` testet den Stand und veröffentlicht das Image `:test` (Workflow `.github/workflows/container.yml`). Danach schickt die CI einen POST an einen Komodo-Webhook (z. B. `https://komodo.example.de/listener/github/stack/meshboard/deploy`), wenn die Repository-Secrets `KOMODO_WEBHOOK_URL` und `KOMODO_WEBHOOK_SECRET` (Webhook-Secret aus Komodo) gesetzt sind. Für ein Release:
 
 1. Version in `backend/__init__.py` (`__version__`) erhöhen und einen Abschnitt `## <Version>` in `CHANGELOG.md` anlegen.
 2. Auf GitHub ein Release mit dem Tag `v<Version>` veröffentlichen, z. B. `v0.2.0`.

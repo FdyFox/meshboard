@@ -3,6 +3,7 @@
 #   Push auf main          -> ghcr.io/<owner>/meshboard:test und :sha-<commit>
 #   Veröffentlichtes Release -> :<version>, :<major>.<minor>, :latest (kein latest bei Pre-Releases)
 #   Pull Request           -> nur Tests und Image-Build, nichts wird veröffentlicht
+#   Danach (außer bei PRs) -> POST an den Komodo-Webhook (Secrets KOMODO_WEBHOOK_URL/_SECRET)
 #
 # Releases werden als v<Version> getaggt (z. B. v0.2.0), passend zu __version__ in
 # backend/__init__.py und einem Abschnitt "## <Version>" in CHANGELOG.md.
@@ -165,3 +166,26 @@ jobs:
             echo
             echo "$TAGS" | sed 's/^/- `/; s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Komodo
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # Webhook von Komodo (z. B. …/listener/github/stack/<stack>/deploy), signiert wie ein
+      # GitHub-Webhook. Ohne Secret KOMODO_WEBHOOK_URL wird der Schritt übersprungen.
+      - name: Komodo benachrichtigen
+        env:
+          URL: ${{ secrets.KOMODO_WEBHOOK_URL }}
+          SECRET: ${{ secrets.KOMODO_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::notice::KOMODO_WEBHOOK_URL nicht gesetzt, kein Deploy"
+            exit 0
+          fi
+          body="{\"ref\":\"refs/heads/main\",\"after\":\"$GITHUB_SHA\"}"
+          sig="sha256=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+          curl -sSf --max-time 30 -X POST "$URL" \
+            -H "Content-Type: application/json" -H "X-GitHub-Event: push" \
+            -H "X-Hub-Signature-256: $sig" -d "$body"
