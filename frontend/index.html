@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meshboard</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+<link rel="stylesheet" href="css/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
+<script type="module" src="js/main.js"></script>
+</head>
+<body>
+<div class="app">
+  <div class="warnbar" id="warn"></div>
+  <header>
+    <div class="logo">Mesh<span>board</span></div>
+    <span class="dot" id="dot"></span>
+    <div class="devinfo" id="devinfo"><span>nicht verbunden</span></div>
+    <div class="spacer"></div>
+    <div class="grp">
+      <button class="primary" id="btnConn" title="Mit der konfigurierten Node verbinden">🔌 Verbinden</button>
+      <button id="btnDisc" disabled>Trennen</button>
+    </div>
+    <div class="grp">
+      <button class="blue" id="btnAdv0" disabled title="Advert nur an direkte Nachbarn (wird nicht weitergeleitet)">📣 Advert Zero-Hop</button>
+      <button class="blue" id="btnAdvF" disabled title="Advert wird von Repeatern geflutet">📡 Advert Flood</button>
+    </div>
+  </header>
+  <nav id="tabs">
+    <button data-tab="live" class="active">Live-Traffic</button>
+    <button data-tab="chat">Chat<span class="badge" id="unreadBadge" style="display:none"></span></button>
+    <button data-tab="stats">Statistik</button>
+    <button data-tab="map">Karte</button>
+    <button data-tab="contacts">Kontakte</button>
+    <button data-tab="device">Gerät</button>
+  </nav>
+  <main>
+    <!-- LIVE -->
+    <section id="sec-live" class="active">
+      <div class="toolbar">
+        <select id="fType"><option value="">Alle Typen</option></select>
+        <select id="fRoute"><option value="">Alle Routen</option><option>FLOOD</option><option>DIRECT</option><option>T-FLOOD</option><option>T-DIRECT</option></select>
+        <input id="fText" placeholder="Suche (Name, Hash, Info)" style="width:200px">
+        <button id="btnPause">⏸ Pause</button>
+        <button id="btnClear">Leeren</button>
+        <div class="spacer"></div>
+        <button id="btnCsv" class="sm">CSV</button>
+        <button id="btnJson" class="sm">JSON</button>
+      </div>
+      <div class="statsbar" id="statsbar"></div>
+      <div class="livewrap">
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Zeit</th><th>Typ</th><th>Route</th><th>Pfad</th><th>SNR</th><th>RSSI</th><th>Byte</th><th>Info</th></tr></thead>
+            <tbody id="pkts"></tbody>
+          </table>
+          <div class="empty" id="liveEmpty">Noch keine Pakete. Sobald der Server mit einem Companion verbunden ist, erscheinen empfangene Pakete hier live.</div>
+        </div>
+        <div class="detail" id="detail"></div>
+      </div>
+    </section>
+    <!-- CHAT -->
+    <section id="sec-chat">
+      <div class="chatside">
+        <input id="chatSearch" placeholder="Suchen…">
+        <input id="roomProbe" placeholder="#Raum suchen (Enter)…" title="Hashtag-Raum beobachten und gehörte Pakete entschlüsseln" style="margin-top:0">
+        <div class="chatlist" id="chatlist"></div>
+      </div>
+      <div class="chatmain">
+        <div class="chathead" id="chathead"><span class="muted">Kanal oder Kontakt wählen</span></div>
+        <div class="msgs" id="msgs"></div>
+        <div class="compose">
+          <input id="msgIn" placeholder="Nachricht…" disabled maxlength="200">
+          <span class="muted mono" id="msgLen"></span>
+          <button class="primary" id="btnSend" disabled>Senden</button>
+        </div>
+      </div>
+    </section>
+    <!-- STATISTIK -->
+    <section id="sec-stats">
+      <div class="toolbar">
+        <select id="stRange" title="Zeitraum"><option value="24">Letzte 24 Stunden</option><option value="168">Letzte 7 Tage</option><option value="720">Letzte 30 Tage</option><option value="2160">Letzte 90 Tage</option><option value="8760">Letztes Jahr</option></select>
+        <button id="btnStatsReload">↻ Aktualisieren</button>
+        <span class="muted small" id="statsInfo"></span>
+      </div>
+      <nav class="subtabs" id="stPages"></nav>
+      <div class="scroll" id="statsBody"><div id="statsPage"></div></div>
+    </section>
+    <!-- MAP -->
+    <section id="sec-map">
+      <div id="map"></div>
+      <div class="mappanel">
+        <div class="legend"><span><i style="background:#0969da"></i>Companion</span><span><i style="background:#2da44e;border-radius:2px"></i>Repeater</span><span><i style="background:#8250df"></i>Room</span><span><i style="background:#9a6700"></i>Sensor</span></div>
+        <h4>Anzeigen</h4>
+        <label><input type="checkbox" class="mf" data-t="1" checked>Companions</label>
+        <label><input type="checkbox" class="mf" data-t="2" checked>Repeater</label>
+        <label><input type="checkbox" class="mf" data-t="3" checked>Room-Server</label>
+        <label><input type="checkbox" class="mf" data-t="4" checked>Sensoren</label>
+        <label><input type="checkbox" id="mLabels" checked>Namen</label>
+        <label><input type="checkbox" id="mNeigh" checked>Nachbar-Linien (SNR)</label>
+        <label>Alter <select id="mAge"><option value="3600">1 h</option><option value="86400">24 h</option><option value="604800" selected>7 Tage</option><option value="0">alle</option></select></label>
+        <div class="row">
+          <button class="sm" id="btnFit">Alle zeigen</button>
+          <button class="sm" id="btnClrPath">Pfad ausblenden</button>
+        </div>
+        <div class="muted" id="mapInfo" style="margin-top:6px;font-size:12px"></div>
+      </div>
+    </section>
+    <!-- CONTACTS -->
+    <section id="sec-contacts">
+      <div class="toolbar">
+        <input id="cSearch" placeholder="Suchen…" style="width:220px">
+        <select id="cType"><option value="">Alle Typen</option><option value="1">Companion</option><option value="2">Repeater</option><option value="3">Room</option><option value="4">Sensor</option></select>
+        <label class="muted"><input type="checkbox" id="cHeard"> auch nur gehörte Knoten</label>
+        <div class="spacer"></div>
+        <button id="btnReloadC" disabled>Neu laden</button>
+      </div>
+      <div class="tablewrap">
+        <table><thead><tr><th>Name</th><th>Typ</th><th>Schlüssel</th><th>Zuletzt</th><th>Pfad</th><th>SNR</th><th>Entf.</th><th>Aktionen</th></tr></thead><tbody id="ctable"></tbody></table>
+      </div>
+    </section>
+    <!-- DEVICE -->
+    <section id="sec-device">
+      <div class="scroll">
+        <div class="cards">
+          <div class="card"><h3>Verbindung</h3>
+            <div class="kv" id="kvConn"></div>
+            <div class="frm conn-frm">
+              <select id="connType"><option value="tcp">TCP / WiFi</option><option value="serial">USB / Seriell</option><option value="ble">Bluetooth LE</option></select>
+              <input id="connAddr" list="connList" placeholder="192.168.1.50:5000">
+              <datalist id="connList"></datalist>
+            </div>
+            <div class="frm"><button id="btnConnScan">Suchen</button><button class="primary" id="btnConnSet">Verbinden</button></div>
+            <p class="muted" style="font-size:12px;margin:2px 0 0">Der Server verbindet sich mit der Node und hält die Verbindung – auch ohne offenen Browser. USB- und BLE-Geräte müssen am Server angeschlossen sein.</p>
+          </div>
+          <div class="card"><h3>Gerät</h3><div class="kv" id="kvInfo"></div></div>
+          <div class="card"><h3>Funk & Statistik <button class="sm" id="btnStats" disabled style="float:right">↻</button></h3><div class="kv" id="kvStats"></div></div>
+          <div class="card"><h3>Node-Einstellungen</h3>
+            <div class="frm"><input id="setName" placeholder="Name"><button id="btnSetName" disabled>Name setzen</button></div>
+            <div class="frm"><input id="setLat" placeholder="Breite (49.23)"><input id="setLon" placeholder="Länge (6.99)"><button id="btnSetPos" disabled>Position</button></div>
+            <div class="frm"><input id="setTx" type="number" placeholder="TX dBm" style="max-width:110px"><button id="btnSetTx" disabled>TX-Leistung</button></div>
+            <label class="frm"><input type="checkbox" id="setLocAdv" disabled> Standort in Adverts mitsenden</label>
+            <label class="frm"><input type="checkbox" id="setAutoAdd" disabled> Neue Knoten automatisch als Kontakt speichern</label>
+            <h4 class="muted small" style="margin:12px 0 4px">Befehle</h4>
+            <div class="frm"><button id="btnTime" disabled>Uhrzeit synchronisieren</button><button id="btnSync" disabled>Nachrichten abrufen</button><button id="btnReboot" class="danger" disabled>Neustart</button></div>
+            <p class="muted small" style="margin:0">Uhrzeit und Nachrichten holt die App beim Verbinden automatisch – die Buttons sind für den Fall, dass etwas hängt.</p>
+          </div>
+          <div class="card"><h3>App</h3>
+            <h4 class="muted small" style="margin:0 0 4px">Schnellantwort ✓</h4>
+            <textarea id="setAck" rows="2" maxlength="150" placeholder="Vorlage" spellcheck="false"></textarea>
+            <div class="frm"><button id="btnSetAck">Speichern</button><button id="btnResetAck" title="Standard-Vorlage ins Feld übernehmen">Standard</button></div>
+            <div class="ackprev"><span class="muted small">Vorschau:</span> <span id="ackPrev"></span> <span class="muted small mono" id="ackLen"></span></div>
+            <details class="small" style="margin:6px 0 10px"><summary class="muted">Platzhalter</summary>
+              <table class="phtbl"><tbody>
+                <tr><td class="mono">{name}</td><td>Absender</td></tr>
+                <tr><td class="mono">{time} {zeit}</td><td>Empfangszeit (HH:MM)</td></tr>
+                <tr><td class="mono">{hops}</td><td>Anzahl Hops</td></tr>
+                <tr><td class="mono">{path} {pfad}</td><td>Hop-Hashes, bei Platzmangel gekürzt (Anfang,…,Ende)</td></tr>
+                <tr><td class="mono">{km}</td><td>Strecke vom Absender über Repeater mit bekannter Position bis hierher</td></tr>
+                <tr><td class="mono">{segs} {noloc}</td><td>Abschnitte der Strecke / Hops ohne Position</td></tr>
+                <tr><td class="mono">{latency}</td><td>Sekunden seit dem Absenden (laut Uhr des Absenders)</td></tr>
+                <tr><td class="mono">{region} {snr}</td><td>Region des Pakets / SNR des letzten Hops</td></tr>
+              </tbody></table>
+              <p class="muted" style="margin:4px 0 0">Die Antwort geht ins Netz: Zahlen mit Dezimalpunkt, „direct“ und „no region“ auf Englisch.</p>
+            </details>
+            <label class="frm"><input type="checkbox" id="setNotify"> Desktop-Benachrichtigungen in diesem Browser</label>
+            <h4 class="muted small" style="margin:12px 0 4px">Daten auf dem Server</h4>
+            <div class="frm"><button id="btnWipe" class="danger">Gespeicherte Daten löschen</button></div>
+            <p class="muted small" style="margin:0">Löscht gespeicherte Knoten, Chatverläufe, gehörte Räume, Paketverlauf und Gerätewerte. Auf dem Gerät wird nichts gelöscht.</p>
+          </div>
+          <div class="card"><h3>Region & Routing</h3>
+            <div class="kv" id="kvRegion"></div>
+            <div class="frm"><span class="muted">#</span><input id="setRegion" placeholder="Regionsname, z. B. saarland" maxlength="30"><button id="btnSetRegion" disabled>Setzen</button><button id="btnClrRegion" disabled>Entfernen</button></div>
+            <p class="muted" style="font-size:12px;margin:2px 0 10px">Flood-Pakete (Adverts, Kanalnachrichten) werden mit dieser Region markiert. Repeater mit Regionsfilter leiten sie nur weiter, wenn sie die Region kennen. Ohne Region wird ungefiltert geflutet.</p>
+            <div class="frm"><label>Pfad-Hash-Größe</label><select id="setHashMode" disabled><option value="0">1 Byte</option><option value="1">2 Byte</option><option value="2">3 Byte</option></select><button id="btnSetHash" disabled>Übernehmen</button></div>
+            <p class="muted" style="font-size:12px;margin:2px 0 10px">Größe der Knoten-Kennung pro Hop in ausgehenden Flood-Paketen. Mehr Bytes bedeuten weniger Verwechslungen, aber auch weniger mögliche Hops. Ältere Repeater-Firmware kann mit 2 oder 3 Byte nichts anfangen.</p>
+            <label class="muted small" for="extraRegions">Weitere Regionen erkennen (Komma-getrennt)</label>
+            <div class="frm" style="margin-top:2px"><input id="extraRegions" placeholder="z. B. pfalz, lux"></div>
+          </div>
+          <div class="card" style="grid-column:1/-1"><h3>Im Netz gehört</h3>
+            <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr))">
+              <div><h4 class="muted" style="margin:0 0 6px;font-size:12px">Regionen (Flood-Pakete mit Region)</h4><div class="nettbl" id="netRegions"></div></div>
+              <div><h4 class="muted" style="margin:0 0 6px;font-size:12px">Kanäle und Räume</h4><div class="nettbl" id="netChans"></div></div>
+            </div>
+            <div class="frm" id="netWatch"></div>
+            <p class="muted" style="font-size:12px;margin:4px 0 0">Regionen und Hashtag-Räume lassen sich nicht zurückrechnen, nur gegen Namen prüfen: bekannte Namen, eine eingebaute Liste (SaarLorLux, Länder, gängige Räume) und eigene Namen (Chat › „#Raum suchen“, Gerät › „Weitere Regionen“). Räume mit privatem Schlüssel bleiben unlesbar.</p>
+          </div>
+          <details class="card logcard" style="grid-column:1/-1"><summary><h3>Protokoll-Log <span class="muted small">(Fehlersuche)</span></h3></summary>
+            <label class="frm muted small"><input type="checkbox" id="logOn"> aufzeichnen</label>
+            <div class="hex log" id="rawlog"></div>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toasts"></div>
+<div class="drawer" id="nodeDrawer"><div class="drawer-in" id="nodeDrawerBody"></div></div>
+</body>
+</html>
