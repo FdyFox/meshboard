@@ -1,13 +1,14 @@
 // Einstieg: Live-Events vom Server in den Client-Zustand übernehmen und Module verdrahten
-import {$,toast} from './util.js';
+import {$,toast,ago} from './util.js';
 import {S,actions,ui,switchTab,renderAll,renderSoon} from './state.js';
 import {connectWs} from './api.js';
-import {initLive,addPacket,renderLive,renderStats,drawSpark} from './live.js';
+import {initLive,addPacket,renderLive,renderStats,drawSpark,showDetail} from './live.js';
 import {initChat,onMsg} from './chat.js';
-import {initMapTab,renderMapSoon} from './map.js';
+import {initMapTab,renderMapSoon,animatePacket} from './map.js';
 import {initContacts,renderContacts} from './contacts.js';
 import {initDevice,renderLog} from './device.js';
 import {initStats} from './stats.js';
+import {initSearch} from './search.js';
 
 function applyStatus(st){
   S.status=st;S.connected=st.connected;S.self=st.self;S.dev=st.dev;S.radio=st.radio||{};S.scope=st.scope;S.regions=st.regions||[];
@@ -26,6 +27,7 @@ const handlers={
     S.logOn=s.logOn;S.log=s.log;
     S.rooms=new Map(s.rooms.map(r=>[r.name,r]));S.watchRooms=s.watchRooms;S.chanStats=s.chanStats;S.regionStats=s.regionStats;
     ensureActive();renderLive();renderStats();renderAll();renderMapSoon();
+    const pk=location.hash.match(/^#live\/(\d+)/);if(pk&&!S.selPkt)showDetail(+pk[1]);  // Direktlink auf ein Paket
   },
   status({status}){applyStatus(status);renderSoon();if(ui.tab==='map')renderMapSoon()},
   packet({p,node,nb,rs,cs}){
@@ -33,7 +35,7 @@ const handlers={
     if(nb)S.neighbors.set(nb[0],nb[1]);
     if(rs)S.regionStats[rs[0]]=rs[1];
     if(cs)S.chanStats[cs.hash]=cs;
-    addPacket(p);
+    addPacket(p);animatePacket(p);
     if(ui.tab==='map')renderMapSoon();
     if(ui.tab==='device'&&(rs||cs))renderSoon();
   },
@@ -54,6 +56,10 @@ const handlers={
     if(S.active?.startsWith('room:')&&!S.rooms.has(S.active.slice(5))){const n=S.active.slice(5),ch=S.channels.find(c=>c.name.replace(/^#/,'')===n);S.active=ch?'ch:'+ch.idx:null}
     renderSoon()},
   toast({msg,kind}){toast(msg,kind)},
+  // Beobachteter Knoten verstummt oder wieder da
+  watch_alert({name,down,last}){
+    const t=down?`👁 ${name} nicht mehr gehört`+(last?' (zuletzt vor '+ago(last)+')':''):`👁 ${name} wieder gehört`;toast(t,down?'err':'ok');
+    if($('#setNotify').checked&&document.hidden&&'Notification' in window&&Notification.permission==='granted')try{new Notification('Meshboard',{body:t,tag:'watch'})}catch{}},
   log({line}){if(!S.logOn)return;S.log.push(line);if(S.log.length>300)S.log.shift();renderLog()},
 };
 
@@ -62,10 +68,10 @@ function online(on){
   w.textContent='Keine Verbindung zum Server – versuche erneut…';
 }
 
-initLive();initChat();initMapTab();initContacts();initDevice();initStats();
+initLive();initChat();initMapTab();initContacts();initDevice();initStats();initSearch();
 actions.openChat=d=>{S.active='c:'+d.key.slice(0,12);switchTab('chat')};
 // Buttons in generiertem HTML (Tabellen, Popups, Detailansicht)
-document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el||el.disabled)return;const fn=actions[el.dataset.act];if(fn){e.preventDefault();fn(el.dataset)}});
+document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el||el.disabled)return;const fn=actions[el.dataset.act];if(fn){e.preventDefault();fn(el.dataset,el)}});
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button');if(b)switchTab(b.dataset.tab)});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)renderSoon()});
 setInterval(()=>{drawSpark();if(ui.tab==='contacts')renderContacts()},10000);

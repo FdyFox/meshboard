@@ -1,7 +1,7 @@
 // Statistik aus dem gespeicherten Verlauf (Server: GET /api/stats), gegliedert in Unterseiten
-import {$,$$,esc,ago,snrCls,store,hasPos,NTYPE} from './util.js';
-import {S,onShow,ui,actions} from './state.js';
-import {api} from './api.js';
+import {$,$$,esc,ago,snrCls,store,hasPos,NTYPE,toast} from './util.js';
+import {S,onShow,onRender,ui,actions} from './state.js';
+import {api,run} from './api.js';
 import {baseLayers,defaultBase} from './basemaps.js';
 
 let data=null,loading=false,timer=null,page=store.get('mcw.statsPage','overview');
@@ -131,12 +131,35 @@ function hints(d,x){
     if(last!=null&&last>-95)warn(`Rauschpegel hoch (${Math.round(last)} dBm) – Störquelle in der Nähe?`);
     else if(last!=null&&ns.length>4&&last-avg>6)info(`Rauschpegel um ${fmt1(last-avg)} dB über dem Durchschnitt.`);
     const b=x.dev.last&&x.dev.last.batt;if(b&&b<3500)warn(`Batterie niedrig (${fmt1(b/1000)} V).`)}
+  const col=d.collisions,b=(col.mode??0)+1,cn=col['b'+b].length;
+  if(cn){const nx=b<3?col['b'+(b+1)].length:null;
+    info(`${cn} Hop-Hash${cn===1?'':'es'} (${b} Byte) teilen sich mehrere aktive Repeater – auf diesen Hops ist der Weg nicht eindeutig.`+(nx!=null&&nx<cn?` Mit ${b+1}-Byte-Hashes wären es ${nx}.`:''))}
+  watched().filter(w=>w.down).forEach(w=>warn(`Beobachteter Knoten ${w.name} seit ${ago(w.since)} nicht gehört.`));
   const dm=d.msgs.dm,all=(dm.ok||0)+(dm.noack||0)+(dm.fail||0);
   if(all>=5&&dm.ok/all<.7)warn(`Nur ${Math.round(dm.ok/all*100)} % der eigenen Direktnachrichten wurden bestätigt – Pfade prüfen oder zurücksetzen.`);
   return h;
 }
 
 // ---------- Unterseiten ----------
+const gname=n=>n.name?esc(n.name)+(n.guess?' <span class="muted" title="vermutet: mehrere Knoten mit diesem Hash, gewählt nach Lage">?</span>':''):'unbekannt';
+// Hash-Kollisionen: Zahlen je Hash-Größe, Tabelle für die Größe des Geräts
+function collisions(c){
+  const b=(c.mode??0)+1,sum=k=>c[k].reduce((a,g)=>a+g.nodes.length,0);
+  const head=[1,2,3].map(i=>`<span class="${i===b?'strong':'muted'}">${i} Byte: ${c['b'+i].length?`${c['b'+i].length} Hash${c['b'+i].length===1?'':'es'} (${sum('b'+i)} Knoten)`:'keine'}</span>`).join(' · ');
+  return `<p class="small">${fmtN(c.active)} aktive Repeater/Room-Server · ${head}${c.mode!=null?` · <span class="muted">dein Gerät nutzt ${b} Byte</span>`:''}</p>`+
+    (c['b'+b].length?table(['Hash','Knoten','Entfernung','zuletzt'],c['b'+b].map(g=>`<tr><td class="mono">${g.hash}</td><td class="wrap">${g.nodes.map(n=>`<a href="#" data-act="nodeDetail" data-key="${n.key}">${esc(n.name||n.key.slice(0,8))}</a>`).join(', ')}</td><td class="mono">${g.nodes.map(n=>fmtKm(n.km)).join(' / ')}</td><td>${g.nodes.map(n=>ago(n.last)).join(' / ')}</td></tr>`)):'<p class="muted">Keine Kollisionen bei '+b+' Byte.</p>');
+}
+// ---------- Knoten beobachten ----------
+const watched=()=>Object.entries(S.settings.watch||{}).map(([key,w])=>{const n=S.nodes.get(key)||{};return {key,...w,name:n.name||key.slice(0,8),last:Math.max(w.last||0,n.heard||0)}}).sort((a,b)=>b.down-a.down||a.name.localeCompare(b.name));
+const fmtH=h=>h>=48&&h%24===0?h/24+' Tage':fmt1(h).replace(/,0$/,'')+' h';
+function watchTable(){const l=watched();
+  return l.length?table(['Knoten','Status','zuletzt gehört','Schwelle',''],l.map(w=>`<tr><td><a href="#" data-act="nodeDetail" data-key="${w.key}">${esc(w.name)}</a></td><td class="${w.down?'snr-r':'snr-g'}">${w.down?'● verstummt seit '+ago(w.since):'● aktiv'}</td><td>${w.last?ago(w.last):'–'}</td><td class="mono">${fmtH(w.hours)}</td><td><button class="sm" data-act="watch" data-key="${w.key}" title="Schwelle ändern">✎</button> <button class="sm" data-act="unwatch" data-key="${w.key}" title="Nicht mehr beobachten">✕</button></td></tr>`)):'<p class="muted">Noch keine Knoten beobachtet.</p>'}
+export const watchBtn=(key,id='ndWatch')=>{const w=(S.settings.watch||{})[key];return `<button class="sm"${id?` id="${id}"`:''} data-act="${w?'unwatch':'watch'}" data-key="${key}" title="${w?'Beobachtung beenden':'Melden, wenn der Knoten länger nicht gehört wird'}">${w?'👁 beobachtet ('+fmtH(w.hours)+') ✕':'👁 Beobachten'}</button>`};
+function watchAsk(d){const cur=(S.settings.watch||{})[d.key];
+  const v=prompt('Melden, wenn der Knoten so viele Stunden nicht gehört wurde:',cur?String(cur.hours).replace('.',','):'24');if(v==null)return;
+  const h=parseFloat(v.replace(',','.'));if(!(h>0))return toast('Bitte eine Zahl eingeben','err');
+  run('watch',{key:d.key,hours:h},cur?'Schwelle geändert':'Knoten wird beobachtet','PUT')}
+
 const PAGES={
   overview:{title:'Übersicht',render(d,x){
     const c=d.cur,p=d.prev,lim=d.duty.limit;
@@ -204,8 +227,10 @@ const PAGES={
     return `<div class="sgrid">
       ${card('Aktive Knoten pro '+x.unit,'<div class="viz" id="cNodes"></div>','','Knoten mit mindestens einem Advert im Zeitabschnitt.')}
       ${card('Knotentypen','<div id="cNtypes"></div>','','Aktive Knoten im Zeitraum nach Typ.')}
-      ${card('Direkte Nachbarn',table(['Hash','Knoten','Typ','Pakete','Ø SNR','Ø RSSI','Entfernung','zuletzt'],d.neighbors.map(n=>`<tr class="click" data-act="nodeDetail" data-hash="${n.hash}" title="Details"><td class="mono">${n.hash}</td><td>${esc(n.name||'unbekannt')}</td><td>${ntype(n.type)}</td><td class="mono">${fmtN(n.count)}</td><td class="mono ${snrCls(n.snr)}">${fmt1(n.snr)}</td><td class="mono">${n.rssi==null?'–':Math.round(n.rssi)}</td><td class="mono">${fmtKm(n.km)}</td><td>${ago(n.last)}</td></tr>`)),'wide','Stationen, die deine Node ohne Umweg hört (letzter Hop). Mehrdeutige Hashes ohne Namen.')}
-      ${card('Repeater-Last',table(['Hash','Knoten','Typ','weitergeleitet'],d.repeaters.map(r=>`<tr class="click" data-act="nodeDetail" data-hash="${r.hash}" title="Details"><td class="mono">${r.hash}</td><td>${esc(r.name||'unbekannt')}</td><td>${ntype(r.type)}</td><td class="mono">${fmtN(r.count)}</td></tr>`)),'','Eindeutige Pakete, in deren Pfad der Repeater vorkommt.')}
+      ${card('Direkte Nachbarn',table(['Hash','Knoten','Typ','Pakete','Ø SNR','Ø RSSI','Entfernung','zuletzt'],d.neighbors.map(n=>`<tr class="click" data-act="nodeDetail" data-hash="${n.hash}" title="Details"><td class="mono">${n.hash}</td><td>${gname(n)}</td><td>${ntype(n.type)}</td><td class="mono">${fmtN(n.count)}</td><td class="mono ${snrCls(n.snr)}">${fmt1(n.snr)}</td><td class="mono">${n.rssi==null?'–':Math.round(n.rssi)}</td><td class="mono">${fmtKm(n.km)}</td><td>${ago(n.last)}</td></tr>`)),'wide','Stationen, die deine Node ohne Umweg hört (letzter Hop). Mehrdeutige Hashes ohne Namen.')}
+      ${card('Repeater-Last',table(['Hash','Knoten','Typ','weitergeleitet'],d.repeaters.map(r=>`<tr class="click" data-act="nodeDetail" data-hash="${r.hash}" title="Details"><td class="mono">${r.hash}</td><td>${gname(r)}</td><td>${ntype(r.type)}</td><td class="mono">${fmtN(r.count)}</td></tr>`)),'','Eindeutige Pakete, in deren Pfad der Repeater vorkommt. ? = vermutet: mehrere Knoten mit diesem Hash, gewählt nach Lage.')}
+      ${card('Beobachtete Knoten',`<div id="watchList">${watchTable()}</div>`,'wide','Meldung, wenn ein Knoten länger als die Schwelle nicht gehört wurde (eigenes Advert oder eindeutig als Hop im Pfad) und wenn er wieder da ist. Beobachten über das Detailfenster eines Knotens oder die Karte.')}
+      ${card('Hash-Kollisionen',collisions(d.collisions),'wide',`Aktive Repeater und Room-Server (gehört seit ${new Date(d.collisions.since).toLocaleDateString('de-DE')}), die sich einen Hop-Hash teilen. Auf solchen Hops ist im Pfad nicht zu erkennen, welcher Knoten weitergeleitet hat; der Server wählt dann nach Lage. Größere Hashes (Gerät › Region & Routing) lösen das, wenn die Repeater sie unterstützen.`)}
       ${card('Neue Knoten',table(['Knoten','Typ','erstmals gehört'],d.newNodes.map(n=>`<tr class="click" data-act="nodeDetail" data-key="${n.key}" title="Details"><td>${esc(n.name||n.key.slice(0,8))}</td><td>${ntype((S.nodes.get(n.key)||{}).type)}</td><td>${new Date(n.first).toLocaleString('de-DE')}</td></tr>`)))}
       ${card('Advert-Häufigkeit',table(['Knoten','Typ','Adverts','pro Tag','Empfänge','Entfernung','zuletzt',''],d.nodesTop.map(n=>`<tr class="click" data-act="nodeDetail" data-key="${n.key}" title="Details"><td>${esc(n.name||n.key.slice(0,8))}</td><td>${ntype(n.type)}</td><td class="mono">${fmtN(n.adverts)}</td><td class="mono${per(n)>24?' strong':''}">${per(n)>24?'⚠ ':''}${fmt1(per(n))}</td><td class="mono">${fmtN(n.count)}</td><td class="mono">${fmtKm(n.km)}</td><td>${ago(n.last)}</td><td>${hasPos(S.nodes.get(n.key))?`<button class="sm" data-act="zoomTo" data-key="${n.key}" title="Auf der Karte zeigen">🗺</button>`:''}</td></tr>`)),'wide','Eindeutige Adverts je Knoten. Jedes geflutete Advert belegt Sendezeit im ganzen Netz – mehr als etwa 24 pro Tag ist auffällig.')}
     </div>`},
@@ -213,6 +238,15 @@ const PAGES={
       colChart($('#cNodes'),d.timeline.map(b=>({label:x.lbl(b.t),v:b.nodes,tip:[fmtN(b.nodes)+' aktive Knoten',x.when(b.t)+' · '+x.unit]})));
       hBars($('#cNtypes'),d.nodeTypes.map(([t,v])=>[ntype(t),v]),d.nodeTypes.reduce((a,x)=>a+x[1],0));
     }},
+
+  routes:{title:'Routen',render(d){
+    const nm=n=>`<a href="#" data-act="nodeDetail" data-key="${n.key}">${esc(n.name)}</a>`,q=l=>l.guess?' <span class="muted" title="mindestens ein Ende vermutet (mehrdeutiger Hash)">?</span>':'';
+    return `<div class="sgrid">
+      ${card('Funkverbindungen auf der Karte','<div class="ndmap big" id="rtMap"></div><p class="muted small" id="rtInfo"></p>','wide','Verbindungen zwischen Knoten entlang der Pfade gehörter Pakete (Absender eines Adverts → Repeater → … → du). Linienstärke nach Anzahl der Pakete, gestrichelt = vermutet.')}
+      ${card('Häufigste Pfade',table(['Pfad','Pakete','Empfänge','Ø SNR','zuletzt'],d.topPaths.map(p=>`<tr><td class="wrap">${p.names.map(esc).join(' → ')}</td><td class="mono">${fmtN(p.count)}</td><td class="mono">${fmtN(p.recv)}</td><td class="mono ${snrCls(p.snr)}">${fmt1(p.snr)}</td><td>${ago(p.last)}</td></tr>`)),'wide','Hop-Folgen, über die eindeutige Pakete bei dir ankommen. ? = vermutet.')}
+      ${card('Weiteste Verbindungen',table(['Verbindung','Entfernung','Pakete','zuletzt'],d.longest.map(l=>`<tr><td class="wrap">${nm(l.a)} ↔ ${nm(l.b)}${q(l)}</td><td class="mono">${fmtKm(l.km)}</td><td class="mono">${fmtN(l.count)}</td><td>${ago(l.last)}</td></tr>`)),'wide','Direkte Funkstrecken zwischen zwei Knoten mit bekannter Position. Sehr weite Strecken mit ? sind oft falsch zugeordnete Hashes.')}
+    </div>`},
+    after(d){routeMap(d)}},
 
   msgs:{title:'Nachrichten',render(d,x){
     const m=d.msgs,dm=m.dm,all=(dm.ok||0)+(dm.noack||0)+(dm.fail||0);
@@ -247,7 +281,7 @@ async function nodeDetail(d){
     ['Entfernung',st.km!=null?fmtKm(st.km):hasPos(n)?'eigene Position unbekannt':'keine Position'],
     ['Zuerst gehört',st.firstSeen?new Date(st.firstSeen).toLocaleString('de-DE'):'–'],['Zuletzt gehört',st.lastSeen?ago(st.lastSeen)+' ('+new Date(st.lastSeen).toLocaleString('de-DE')+')':'–'],
     ['Im Gerät gespeichert',st.contact?'ja':'nein']].map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('');
-  const btns=(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'');
+  const btns=(st.key&&S.nodes.has(st.key)?watchBtn(st.key)+' ':'')+(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'');
   body.innerHTML=`<div class="drawer-h"><h3>${esc(title)}</h3><button class="sm" data-act="closeDetailNode" title="Schließen (Esc)">✕</button></div>
     ${btns?`<div class="frm">${btns}</div>`:''}
     <div class="kv">${kv}</div>
@@ -257,12 +291,18 @@ async function nodeDetail(d){
     ${st.relayed?'<h4>Weitergeleitete Pakete</h4><div class="viz" id="ndRel"></div>':''}
     ${st.adverts?'<h4>Adverts</h4><div class="viz" id="ndAdv"></div>':''}
     ${st.paths.length?'<h4>Wege, über die Adverts ankommen</h4><div class="ndmap" id="ndMap"></div><p class="muted small" id="ndMapInfo"></p>'+table(['Pfad','Empfänge','Ø SNR'],st.paths.map(p=>`<tr><td class="wrap">${p.path?p.names.map(esc).join(' → '):'direkt'}</td><td class="mono">${fmtN(p.count)}</td><td class="mono ${snrCls(p.snr)}">${fmt1(p.snr)}</td></tr>`)):''}
+    ${st.via.length?'<h4>Kommt bei dir an über</h4>'+table(['Nachbar','Empfänge','Ø SNR'],st.via.map(v=>`<tr${v.hash?` class="click" data-act="nodeDetail" data-hash="${v.hash}" title="Details"`:''}><td>${v.hash?`<span class="mono">${v.hash}</span> ${esc(v.name||'unbekannt')}`:'direkt (ohne Repeater)'}</td><td class="mono">${fmtN(v.count)}</td><td class="mono ${snrCls(v.snr)}">${fmt1(v.snr)}</td></tr>`)):''}
+    ${st.peers.length?'<h4>Nachbarn im Netz</h4>'+table(['Hop','Knoten','hört ihn','liefert an ihn'],st.peers.map(p=>`<tr class="click" data-act="nodeDetail" data-hash="${p.hash}" title="Details"><td class="mono">${p.hash}</td><td>${esc(p.name||'unbekannt')}</td><td class="mono">${p.out?fmtN(p.out):'–'}</td><td class="mono">${p.in?fmtN(p.in):'–'}</td></tr>`))+'<p class="muted small">Aus den Pfaden: wer seine Pakete als Nächstes weiterleitet („hört ihn“) und von wem er Pakete übernimmt. ? = vermutet.</p>':''}
+    ${st.hourly.length?'<h4>Aktivität nach Wochentag und Uhrzeit</h4><div id="ndHeat"></div>':''}
+    ${st.snrDist.length>1?'<h4>SNR-Verteilung direkter Empfänge (dB)</h4><div class="viz" id="ndSnrD"></div>':''}
     ${st.recent.length?'<h4>Letzte Adverts</h4>'+table(['Zeit','Hops','Pfad','SNR','Region'],st.recent.map(a=>`<tr><td>${new Date(a.t).toLocaleString('de-DE')}</td><td class="mono">${a.hops}</td><td class="mono">${esc(a.path||'–')}</td><td class="mono ${snrCls(a.snr)}">${fmt1(a.snr)}</td><td>${a.region?(a.region==='?'?'unbekannt':'#'+esc(a.region)):'–'}</td></tr>`)):''}
     ${!st.adverts&&!st.direct&&!st.relayed?'<p class="muted">Im gewählten Zeitraum nichts von diesem Knoten gehört.</p>':''}`;
   const pts=f=>st.buckets.map((b,i)=>({t:st.start+i*size,...f(b)}));
   if(st.direct)lineChart($('#ndSnr'),pts(b=>({v:b.snr})).map(p=>({label:lbl(p.t),v:p.v,tip:[p.v==null?'keine Daten':fmt1(p.v)+' dB',when(p.t)]})),v=>fmt1(v),140);
   if(st.relayed)colChart($('#ndRel'),st.buckets.map((b,i)=>({label:lbl(st.start+i*size),v:b.relayed,tip:[fmtN(b.relayed)+' weitergeleitet',when(st.start+i*size)]})),fmtN,140);
   if(st.paths.length)pathMap(st);
+  if(st.hourly.length)heatmap($('#ndHeat'),st.hourly);
+  if(st.snrDist.length>1)colChart($('#ndSnrD'),st.snrDist.map(([b,v])=>({label:String(b).replace('.',','),v,tip:[fmtN(v)+' Empfänge','SNR '+fmt1(b)+' bis '+fmt1(b+2.5)+' dB']})),fmtN,140);
   if(st.adverts)colChart($('#ndAdv'),st.buckets.map((b,i)=>({label:lbl(st.start+i*size),v:b.adverts,tip:[fmtN(b.adverts)+' Adverts',when(st.start+i*size)]})),fmtN,140);
 }
 // Wege auf einer kleinen Karte: Linienstärke nach Anzahl der Empfänge
@@ -283,6 +323,21 @@ function pathMap(st){
   const unres=st.paths.reduce((a,p)=>a+p.unresolved,0),miss=st.paths.length-drawn.length;
   $('#ndMapInfo').textContent=[`${drawn.length} von ${st.paths.length} Wegen eingezeichnet`,miss?`${miss} ohne genug Positionen`:'',unres?`Hops ohne bekannte Position werden übersprungen`:'',!st.me?'eigene Position unbekannt':''].filter(Boolean).join(' · ');
 }
+// Alle Funkverbindungen auf einer Karte
+let rtMap=null,rtView=null;  // Ausschnitt bleibt beim automatischen Neuladen erhalten
+function routeMap(d){
+  if(rtMap){rtMap.remove();rtMap=null}
+  const el=$('#rtMap');if(!el)return;
+  if(typeof L==='undefined'||!d.links.length){el.style.display='none';$('#rtInfo').textContent=typeof L==='undefined'?'Karte nicht verfügbar (offline?).':'Keine Verbindungen mit bekannten Positionen im Zeitraum.';return}
+  rtMap=L.map(el);defaultBase(baseLayers()).addTo(rtMap);
+  const max=Math.max(...d.links.map(l=>l.count)),col=getComputedStyle(document.documentElement).getPropertyValue('--accent2').trim()||'#58a6ff',all=[],nodes=new Map();
+  d.links.slice().reverse().forEach(l=>{const ll=[[l.a.lat,l.a.lon],[l.b.lat,l.b.lon]];all.push(...ll);nodes.set(l.a.key,l.a);nodes.set(l.b.key,l.b);
+    L.polyline(ll,{color:col,weight:1.5+4*Math.sqrt(l.count/max),opacity:.75,dashArray:l.guess?'6 5':null})
+      .bindTooltip(`${esc(l.a.name)} ↔ ${esc(l.b.name)}<br>${fmtKm(l.km)} · ${fmtN(l.count)} Pakete${l.guess?'<br>vermutet (mehrdeutiger Hash)':''}`,{sticky:true}).addTo(rtMap)});
+  nodes.forEach(n=>L.circleMarker([n.lat,n.lon],{radius:4,color:'#fff',weight:1.5,fillColor:col,fillOpacity:1}).bindTooltip(esc(n.name),{direction:'top'}).on('click',()=>nodeDetail({key:n.key})).addTo(rtMap));
+  if(rtView)rtMap.setView(rtView[0],rtView[1]);else rtMap.fitBounds(L.latLngBounds(all).pad(.1),{maxZoom:13});
+  $('#rtInfo').textContent=`${d.links.length} Verbindungen zwischen ${nodes.size} Knoten`+(d.links.length>=150?' (die 150 häufigsten)':'')+' · Klick auf einen Punkt öffnet die Details';
+}
 const closeDetail=()=>{detailReq++;$('#nodeDrawer').classList.remove('show');hideTip();if(ndMap){ndMap.remove();ndMap=null}};
 
 function renderStatsTab(){
@@ -293,6 +348,7 @@ function renderStatsTab(){
   const x=derive(data),c=data.cur;
   $('#statsInfo').textContent=c.first?`Daten seit ${new Date(c.first).toLocaleString('de-DE')} · Aufbewahrung ${data.retentionDays} Tage`+(data.prev?'':' · noch kein vollständiger Vorzeitraum zum Vergleich'):`Noch keine Pakete im Zeitraum · Aufbewahrung ${data.retentionDays} Tage`;
   const P=PAGES[page]||PAGES.overview;
+  if(rtMap){rtView=page==='routes'?[rtMap.getCenter(),rtMap.getZoom()]:null;rtMap.remove();rtMap=null}else rtView=null;
   $('#statsPage').innerHTML=P.render(data,x);P.after(data,x);
 }
 
@@ -306,6 +362,8 @@ async function load(){
 
 export function initStats(){
   actions.nodeDetail=nodeDetail;actions.closeDetailNode=closeDetail;
+  actions.watch=watchAsk;actions.unwatch=d=>run('watch',{key:d.key,hours:0},'Beobachtung beendet','PUT');
+  onRender(null,()=>{const l=$('#watchList');if(l)l.innerHTML=watchTable();const b=$('#ndWatch');if(b)b.outerHTML=watchBtn(b.dataset.key)});
   $('#nodeDrawer').addEventListener('click',e=>{if(e.target.id==='nodeDrawer')closeDetail()});
   addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()});
   $('#stPages').innerHTML=Object.entries(PAGES).map(([k,p])=>`<button data-page="${k}">${p.title}</button>`).join('');

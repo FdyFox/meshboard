@@ -21,6 +21,7 @@
     <span class="dot" id="dot"></span>
     <div class="devinfo" id="devinfo"><span>nicht verbunden</span></div>
     <div class="spacer"></div>
+    <button id="btnSearch" title="Suchen (Strg+K oder /)">🔍 Suchen</button>
     <div class="grp">
       <button class="primary" id="btnConn" title="Mit der konfigurierten Node verbinden">🔌 Verbinden</button>
       <button id="btnDisc" disabled>Trennen</button>
@@ -101,13 +102,27 @@
         <label><input type="checkbox" class="mf" data-t="3" checked>Room-Server</label>
         <label><input type="checkbox" class="mf" data-t="4" checked>Sensoren</label>
         <label><input type="checkbox" id="mLabels" checked>Namen</label>
-        <label><input type="checkbox" id="mNeigh" checked>Nachbar-Linien (SNR)</label>
+        <label><input type="checkbox" id="mNeigh">Nachbar-Linien (SNR)</label>
         <label>Alter <select id="mAge"><option value="3600">1 h</option><option value="86400">24 h</option><option value="604800" selected>7 Tage</option><option value="0">alle</option></select></label>
         <div class="row">
           <button class="sm" id="btnFit">Alle zeigen</button>
           <button class="sm" id="btnClrPath">Pfad ausblenden</button>
         </div>
+        <h4>Pakete</h4>
+        <label title="Neue Pakete laufen als Linie entlang ihres Weges zu dir"><input type="checkbox" id="mAnim">Live animieren</label>
+        <div class="muted small" id="animInfo"></div>
+        <div class="row"><button class="sm" id="btnReplay" title="Gespeicherte Pakete auf der Karte abspielen">⏵ Wiedergabe…</button></div>
+        <div class="legend anim"><span><i style="background:#2da44e"></i>Advert</span><span><i style="background:#58a6ff"></i>Kanal</span><span><i style="background:#bf3989"></i>Direkt</span><span><i style="background:#8b98a5"></i>andere</span></div>
         <div class="muted" id="mapInfo" style="margin-top:6px;font-size:12px"></div>
+      </div>
+      <div class="replay" id="replayBar" hidden>
+        <button class="sm" id="rpPlay" title="Abspielen / Anhalten">⏵</button>
+        <select id="rpRange" title="Zeitraum"><option value="1">1 h</option><option value="6">6 h</option><option value="24" selected>24 h</option><option value="72">3 Tage</option></select>
+        <select id="rpSpeed" title="Geschwindigkeit"><option value="60">60×</option><option value="300" selected>300×</option><option value="1200">1200×</option><option value="3600">3600×</option></select>
+        <input type="range" id="rpPos" min="0" max="1000" value="0" aria-label="Zeitpunkt">
+        <span class="mono" id="rpClock"></span>
+        <span class="muted small" id="rpInfo"></span>
+        <button class="sm" id="rpClose" title="Wiedergabe schließen">✕</button>
       </div>
     </section>
     <!-- CONTACTS -->
@@ -199,6 +214,7 @@
   </main>
 </div>
 <div id="toasts"></div>
+<div class="gs" id="gs"><div class="gs-in"><input id="gsIn" placeholder="Knoten, Kanäle, Nachrichten suchen…" aria-label="Suchen" autocomplete="off"><div id="gsList"></div></div></div>
 <div class="drawer" id="nodeDrawer"><div class="drawer-in" id="nodeDrawerBody"></div></div>
 </body>
 </html>

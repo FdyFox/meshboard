@@ -1,7 +1,7 @@
 // Live-Traffic: Pakettabelle, Detailansicht, Statistik
-import {$,$$,esc,tfmt,snrCls,hasPos,hav,PT,ROUTES,NTYPE,hexSpaced,chTitle} from './util.js';
-import {S,MAX_PKTS,MAX_ROWS,nodeName,actions,ui,onRender} from './state.js';
-import {run,downloadUrl} from './api.js';
+import {$,$$,esc,tfmt,snrCls,hasPos,hav,PT,ROUTES,NTYPE,hexSpaced,chTitle,toast} from './util.js';
+import {S,MAX_PKTS,MAX_ROWS,nodeName,hopInfo,hopTitle,actions,ui,onRender} from './state.js';
+import {api,run,downloadUrl} from './api.js';
 
 export function pktInfo(p){
   const d=p.dec||{};
@@ -25,7 +25,7 @@ function passFilter(p){
 function pathHtml(p){
   if(p.ptype===9)return '<span class="muted">Trace</span>';
   if(!p.hopCount)return '<span class="muted">0</span>'+(p.hs>1?` <span class="muted mono">${p.hs}B</span>`:'');
-  return p.path.map(h=>{const n=nodeName(h);return `<span class="hash${n?' known':''}" title="${esc(n||'unbekannt')}">${h}</span>`}).join('')+` <span class="muted mono" title="Pfad-Hash-Größe">${p.hs}B</span>`;
+  return p.path.map((h,i)=>{const x=hopInfo(p,i);return `<span class="hash${x.name?' known':''}${x.guess?' guess':''}" title="${esc(hopTitle(x))}">${h}</span>`}).join('')+` <span class="muted mono" title="Pfad-Hash-Größe">${p.hs}B</span>`;
 }
 const tcHex=p=>p.tc[0].toString(16).padStart(4,'0');
 function rowHtml(p){
@@ -50,12 +50,14 @@ export function addPacket(p){
   if(!S.paused&&passFilter(p))prependRow(p);
   renderStatsSoon();
 }
-export function showDetail(id){
-  const p=S.packets.find(x=>x.id===id);if(!p)return;S.selPkt=id;
+export async function showDetail(id){
+  let p=S.packets.find(x=>x.id===id);
+  if(!p){try{p=S.extraPkt=await api('packets/'+id,undefined,'GET')}catch(e){toast(e.message,'err');return}}  // Direktlink auf ein älteres Paket
+  S.selPkt=id;history.replaceState(null,'','#live/'+id);
   $$('#pkts tr').forEach(tr=>tr.classList.toggle('sel',+tr.dataset.id===id));
   const d=p.dec||{},kv=[['Zeit',new Date(p.t).toLocaleString('de-DE')],['Typ',PT[p.ptype]+' (v'+(p.ver+1)+')'],['Route',ROUTES[p.route]],['SNR / RSSI',p.snr.toFixed(2)+' dB / '+p.rssi+' dBm'],['Größe',p.len+' Byte'],['Hash-Größe',p.hs+' Byte']];
   if(p.tc)kv.push(['Region',p.region?'#'+esc(p.region):'unbekannt (Code '+tcHex(p)+')']);
-  if(p.hopCount&&p.ptype!==9)kv.push(['Pfad',p.path.map(h=>h+(nodeName(h)?' ('+esc(nodeName(h))+')':'')).join('<br>')]);
+  if(p.hopCount&&p.ptype!==9)kv.push(['Pfad',p.path.map((h,i)=>{const x=hopInfo(p,i);return h+(x.name?' ('+esc(x.name)+(x.guess?'?':'')+')':'')}).join('<br>')+(p.res?.some(r=>r[1]>1)?'<br><span class="muted small">? = vermutet: mehrere Knoten mit diesem Hash, gewählt nach Lage</span>':'')]);
   if(d.name)kv.push(['Name',esc(d.name)]);if(d.key)kv.push(['Public Key','<span class="mono">'+d.key+'</span>']);
   if(d.ntype!=null)kv.push(['Knotentyp',NTYPE[d.ntype]]);if(hasPos(d))kv.push(['Position',d.lat.toFixed(5)+', '+d.lon.toFixed(5)+(hasPos(S.self)?' ('+hav(S.self.lat,S.self.lon,d.lat,d.lon).toFixed(1)+' km)':'')]);
   if(d.ts)kv.push(['Advert-Zeit',new Date(d.ts*1000).toLocaleString('de-DE')]);
@@ -63,9 +65,20 @@ export function showDetail(id){
   if(d.ch)kv.push(['Kanal-Hash',d.ch+(d.chName?' ('+esc(chTitle(d.chName))+')':'')]);if(d.ack)kv.push(['ACK',d.ack]);
   const canMap=(p.hopCount&&p.ptype!==9)||hasPos(d);
   $('#detail').innerHTML=`<h3>Paket #${p.id} <button class="sm" style="float:right" data-act="closeDetail">✕</button></h3><div class="kv">${kv.map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('')}</div>
-   ${canMap?`<button class="blue sm" data-act="pathOnMap" data-id="${p.id}">🗺 Pfad auf Karte</button>`:''}
-   <h4 class="muted" style="margin:12px 0 4px;font-size:12px">Rohdaten</h4><div class="hex">${hexSpaced(p.raw)}</div>`;
+   <div class="row">${canMap?`<button class="blue sm" data-act="pathOnMap" data-id="${p.id}">🗺 Pfad auf Karte</button>`:''}<button class="sm" data-act="copyPktLink" data-id="${p.id}" title="Direktlink auf dieses Paket kopieren">🔗 Link</button></div>
+   <h4 class="muted" style="margin:12px 0 4px;font-size:12px">Rohdaten</h4><div class="hex" id="pktHex">${hexSpaced(p.raw)}</div><div id="pktLegend"></div>`;
   $('#detail').classList.add('show');
+  bytesView(p);
+}
+// Rohdaten farbig nach Abschnitten (Aufteilung liefert der Server)
+async function bytesView(p){
+  let segs;try{segs=await api('packets/layout?raw='+p.raw,undefined,'GET')}catch{return}
+  if(S.selPkt!==p.id||!$('#pktHex'))return;
+  const hx=i=>p.raw.slice(2*i,2*i+2),sg=(i,s)=>`sg${s[0].startsWith('Hop ')?'h':i%6}`;
+  $('#pktHex').innerHTML=segs.map((s,i)=>`<span class="seg ${sg(i,s)}" data-i="${i}" title="${esc(s[0])} · ${s[2]-s[1]} Byte">${[...Array(s[2]-s[1])].map((_,k)=>hx(s[1]+k)).join(' ')}</span>`).join(' ');
+  $('#pktLegend').innerHTML='<div class="seglg">'+segs.map((s,i)=>`<div data-i="${i}"><i class="seg ${sg(i,s)}"></i>${esc(s[0])} <span class="muted">${s[2]-s[1]} B</span></div>`).join('')+'</div>';
+  const hl=(i,on)=>$$(`#detail [data-i="${i}"]`).forEach(e=>e.classList.toggle('on',on));
+  $$('#detail [data-i]').forEach(e=>{e.onpointerenter=()=>hl(e.dataset.i,true);e.onpointerleave=()=>hl(e.dataset.i,false)});
 }
 // Statistik
 let statT=null;function renderStatsSoon(){if(!statT)statT=setTimeout(()=>{statT=null;renderStats()},500)}
@@ -90,6 +103,8 @@ export function initLive(){
   $('#btnCsv').onclick=()=>{location.href=downloadUrl('packets/export?fmt=csv')};
   $('#btnJson').onclick=()=>{location.href=downloadUrl('packets/export?fmt=json')};
   $('#pkts').addEventListener('click',e=>{const tr=e.target.closest('tr');if(tr)showDetail(+tr.dataset.id)});
-  actions.closeDetail=()=>$('#detail').classList.remove('show');
+  actions.closeDetail=()=>{$('#detail').classList.remove('show');S.selPkt=null;history.replaceState(null,'','#live')};
+  actions.copyPktLink=d=>{const u=location.origin+location.pathname+'#live/'+d.id;
+    (navigator.clipboard?.writeText(u)||Promise.reject()).then(()=>toast('Link kopiert','ok'),()=>prompt('Link zum Paket:',u))};
   onRender('live',renderStats);
 }

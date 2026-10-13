@@ -80,12 +80,19 @@ function renderConv(){
   const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<60;
   box.innerHTML=arr.length?arr.map(m=>{
     const meta=m.dir==='in'?`<span class="from">${esc(m.from)}</span> · ${dtfmt(m.ts||m.rx)}${m.snr!=null?` · <span class="${snrCls(m.snr)}">SNR ${m.snr.toFixed(1)}</span>`:''}${m.hops!=null?' · '+(m.hops==='direkt'?'direkt':m.hops+' Hops'):''}${m.hashBytes?` · <span class="hash" title="Pfad-Hash-Größe">${m.hashBytes}B</span>`:''}${m.region?(m.region==='-'?' · <span class="hash" title="Region">ohne Region</span>':` · <span class="hash known" title="Region">#${esc(m.region)}</span>`):m.regionCode?` · <span class="hash" title="Unbekannte Region – Namen unter Gerät › Region & Routing eintragen">Region ?${m.regionCode}</span>`:''}${replyBtns(conv,m)}`:dtfmt(m.rx);
-    let st='';if(m.dir==='out'){st={sending:'⏳ sende…',sent:conv.startsWith('ch:')?'✓ gesendet'+(m.region?(m.region==='-'?' (ohne Region)':' (#'+esc(m.region)+')'):''):'↗ gesendet ('+(m.flood?'Flood':'Direkt')+'), warte auf ACK…',ok:'✓✓ zugestellt'+(m.rtt?' ('+(m.rtt/1000).toFixed(1)+' s)':''),noack:'⚠ keine Bestätigung',fail:'✗ Fehler: '+esc(m.err||'')}[m.status]||'';
-      if((m.status==='noack'||m.status==='fail')&&conv.startsWith('c:'))st+=` <button class="sm" data-act="retry" data-conv="${conv}" data-id="${m.id}">↻ erneut</button>`}
-    return `<div class="msg ${m.dir}"><div class="meta">${meta}</div><div class="txt${m.cli?' mono':''}">${linkify(m.text)}</div>${st?`<div class="st ${m.status==='ok'?'ok':m.status==='noack'||m.status==='fail'?'fail':''}">${st}</div>`:''}</div>`}).join(''):'<div class="empty">Noch keine Nachrichten</div>';
+    let st='',cls='';if(m.dir==='out'){const ch=conv.startsWith('ch:'),rg=ch&&m.region?(m.region==='-'?' (ohne Region)':' (#'+esc(m.region)+')'):'';
+      st={sending:'⏳ sende…',sent:ch?'✓ gesendet'+rg:'↗ '+(m.flood?'Flood':'Direkt')+', warte auf ACK…',ok:'✓✓ zugestellt'+(m.rtt?' ('+(m.rtt/1000).toFixed(1)+' s)':''),noack:ch?'kein Repeater gehört':'⚠ keine Bestätigung',fail:'✗ Fehler: '+esc(m.err||'')}[m.status]||'';
+      if(m.repeats&&m.status!=='sending'&&m.status!=='fail')st=repTag(m)+(ch?(m.status==='sent'?'':' · '+st)+rg:' · '+st);
+      cls=m.status==='ok'?'ok':m.status==='fail'||(m.status==='noack'&&!ch)?'fail':'';
+      if(m.status==='noack'||m.status==='fail')st+=` <button class="sm" data-act="retry" data-conv="${conv}" data-id="${m.id}">↻ erneut</button>`}
+    return `<div class="msg ${m.dir}" data-mid="${m.id}"><div class="meta">${meta}</div><div class="txt${m.cli?' mono':''}">${linkify(m.text)}</div>${st?`<div class="st ${cls}">${st}</div>`:''}</div>`}).join(''):'<div class="empty">Noch keine Nachrichten</div>';
   if(atBottom||arr.length<30)box.scrollTop=box.scrollHeight;
   updateCompose();
 }
+// Rückmeldung: grauer Haken = gesendet, noch kein Repeater gehört; grün mit Zahl = so viele Repeater haben weitergeleitet
+const repLine=r=>(r.name||(r.h?r.h:'Repeater'))+(r.h&&r.name?' ('+r.h+')':'')+' · SNR '+r.snr.toFixed(1)+' · '+r.hops+' Hop'+(r.hops===1?'':'s');
+function repTag(m){const n=m.repeats.length;
+  return n?`<span class="rep ok" data-act="repeats" title="${esc(n+' Repeater gehört:\n'+m.repeats.map(repLine).join('\n'))}">✓ ${n}</span>`:'<span class="rep" title="Gesendet – noch kein Repeater gehört">✓</span>'}
 // Schnellantwort aus der Vorlage (Gerät › App); unbekannte Platzhalter bleiben stehen.
 // short: langen Pfad auf Anfang und Ende kürzen (wenn die Antwort sonst nicht in eine Nachricht passt)
 const dec1=v=>v.toFixed(1);  // Antwort geht ins Netz: englisch, Dezimalpunkt
@@ -124,6 +131,7 @@ export function initChat(){
   $('#msgIn').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});$('#msgIn').oninput=updateLen;$('#btnSend').onclick=sendMsg;
   $('#setNotify').checked=store.get('mcw.notify',false);
   $('#setNotify').onchange=async e=>{if(e.target.checked&&'Notification' in window&&Notification.permission!=='granted'){const p=await Notification.requestPermission();if(p!=='granted')e.target.checked=false}store.set('mcw.notify',e.target.checked)};
+  actions.repeats=(d,el)=>toast(el.title,'ok');
   actions.retry=d=>run('messages/retry',{conv:d.conv,id:d.id});
   actions.subscribeRoom=d=>run('rooms/'+encodeURIComponent(d.name)+'/subscribe',undefined,chTitle(d.name)+' auf dem Gerät eingerichtet');
   actions.forgetRoom=d=>{if(confirm(chTitle(d.name)+' vergessen? Der mitgelesene Verlauf wird gelöscht.'))run('rooms/'+encodeURIComponent(d.name),undefined,null,'DELETE')};

@@ -12,6 +12,11 @@ export const S={connected:false,status:{},self:null,dev:null,radio:{},scope:null
 export const findContactByPrefix=p=>{for(const c of S.contacts.values())if(c.key.startsWith(p))return c;return null};
 export function nodesByHash(h){const r=[];for(const n of S.nodes.values())if(n.key.startsWith(h))r.push(n);return r}
 export function nodeName(h){const l=nodesByHash(h);return l.length===1?l[0].name:l.length>1?l.map(n=>n.name).join(' / '):null}
+// Hop i eines Pakets: vom Server zugeordnet (p.res = [Schlüssel|null, Anzahl Kandidaten]) oder per Hash nachgeschlagen
+export function hopInfo(p,i){const h=p.path[i],r=p.res&&p.res[i];
+  if(r&&r[0]){const n=S.nodes.get(r[0]);return {name:n?.name||r[0].slice(0,8),key:r[0],guess:r[1]>1,n:r[1]}}
+  const l=nodesByHash(h);return {name:l.length?l.map(n=>n.name).join(' / '):null,key:l.length===1?l[0].key:null,guess:false,n:l.length}}
+export const hopTitle=x=>x.name?x.name+(x.guess?` – vermutet (${x.n} Kandidaten, nach Lage gewählt)`:''):'unbekannt';
 export const lastSeen=n=>Math.max(n.heard||0,(n.advTs||0)*1000>Date.now()+86400000?0:(n.advTs||0)*1000);
 export const chanId=ch=>ch?(ch.name+':'+(ch.secret||'').slice(0,8)):'';
 export const chanRegion=ch=>ch?(S.settings.chanRegion[chanId(ch)]||''):'';
