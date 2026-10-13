@@ -348,3 +348,16 @@ def test_ack_preview_and_send(app):
     assert p == {"text": "@[Alice] 3 hops", "bytes": 15}
     assert app.json("POST", "/api/messages/ack", {"conv": "ch:0", "id": "gibtsnicht"})[1]["detail"] == "Nachricht nicht gefunden"
     assert app.json("POST", "/api/messages/send", {"conv": "room:technik", "text": "x"})[0] == 400
+
+
+def test_add_heard_node_as_contact(app):
+    rep = "ab" + "22" * 31  # Repeater „Rep-Saar“, kommt laufend per Advert
+    assert app.call("DELETE", f"/api/contacts/{rep}")[0] == 200
+    s = app.state()
+    assert all(c["key"] != rep for c in s["contacts"]) and any(n["key"] == rep for n in s["nodes"])
+    # Nur gehört: Kontakt wird aus den Advert-Daten gebaut, Pfad unbekannt
+    assert app.call("POST", f"/api/contacts/{rep}/add")[0] == 200
+    c = next(c for c in app.state()["contacts"] if c["key"] == rep)
+    assert (c["name"], c["type"], c["saved"], c["flood"]) == ("Rep-Saar", 2, True, True)
+    status, body = app.json("POST", f"/api/contacts/{'ee' * 32}/add")
+    assert status == 400 and "unbekannt" in body["detail"]

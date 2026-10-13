@@ -29,7 +29,7 @@
 - **Karte** – Companions, Repeater, Room-Server und Sensoren mit Standort aus Adverts. Dazu Nachbar-Linien nach SNR, Paketpfad auf der Karte und eigene Position per Klick. Neue Pakete können live als Linie entlang ihres Weges laufen; die **Wiedergabe** spielt die letzten 1 h bis 3 Tage im Zeitraffer ab.
 - **Suche** – `Strg+K` oder `/`: Knoten (auch per Hash), Kontakte, Kanäle, Räume und Nachrichten.
 - **Adverts** – Zero-Hop und Flood.
-- **Kontakte** – speichern, löschen, teilen, Pfad zurücksetzen, Entfernung.
+- **Kontakte** – speichern, löschen, teilen, Pfad zurücksetzen, Entfernung. Auch nur gehörte Knoten lassen sich im Gerät speichern (in den Kontakten oder im Karten-Popup), der Kontakt entsteht dann aus dem letzten Advert, mit unbekanntem Pfad.
 - **Gerät** – Verbindung, Name, Position, TX-Leistung, Pfad-Hash-Größe, Batterie, Rauschpegel, Airtime, Paketstatistik, Neustart, Protokoll-Log.
 
 Der Server zeichnet rund um die Uhr auf, auch wenn kein Browser offen ist. Knoten, Chatverläufe, Paketverlauf und Einstellungen liegen in einer SQLite-Datenbank. „Leeren“ im Live-Traffic leert nur die Anzeige, der Verlauf für die Statistik bleibt erhalten.

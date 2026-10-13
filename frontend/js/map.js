@@ -26,7 +26,8 @@ function popupHtml(n){
    (nb?`<b>Direkter Nachbar</b> (${nb[1].n}× gehört, Ø SNR ${(nb[1].snrSum/nb[1].n).toFixed(1)})<br>`:'')+
    (dist!=null?`Entfernung: ${dist.toFixed(1)} km<br>`:'')+
    `${n.lat.toFixed(5)}, ${n.lon.toFixed(5)}<br>`+
-   watchBtn(n.key,'')+' '+(ct?(ct.type===1||ct.type===3?`<button class="sm" data-act="openChat" data-key="${n.key}">💬 Chat</button> `:'')+'<span class="muted">im Gerät gespeichert</span>':'<span class="muted">nicht in Kontakten</span>');
+   watchBtn(n.key,'')+' '+(ct?.saved?(ct.type===1||ct.type===3?`<button class="sm" data-act="openChat" data-key="${n.key}">💬 Chat</button> `:'')+`<button class="sm" data-act="remote" data-key="${n.key}">${ct.type===2||ct.type===3?'🛠 Verwalten':'📡 Trace'}</button>`:
+    `<button class="sm" data-act="addContact" data-key="${n.key}"${S.connected?'':' disabled'}>＋ Im Gerät speichern</button>`);
 }
 let mapT=null;export function renderMapSoon(){if(!mapT)mapT=setTimeout(()=>{mapT=null;renderMap()},800)}
 function renderMap(){
@@ -39,7 +40,7 @@ function renderMap(){
     const old=ls&&Date.now()-ls>86400000;seen.add(n.key);cnt++;
     let m=markers.get(n.key);
     if(!m){m=L.marker([n.lat,n.lon],{icon:icon(n,old)}).addTo(map);m.bindPopup('');m.on('popupopen',()=>m.setPopupContent(popupHtml(S.nodes.get(n.key)||n)));markers.set(n.key,m)}
-    else{m.setLatLng([n.lat,n.lon]);m.setIcon(icon(n,old))}
+    else{m.setLatLng([n.lat,n.lon]);m.setIcon(icon(n,old));if(m.isPopupOpen())m.setPopupContent(popupHtml(n))}
     m.unbindTooltip();if(labels)m.bindTooltip(esc(n.name||n.key.slice(0,6)),{permanent:true,direction:'right',offset:[10,0],className:'lbl'});
   }
   for(const [k,m] of markers)if(!seen.has(k)){m.remove();markers.delete(k)}

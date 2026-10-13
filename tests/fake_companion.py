@@ -103,10 +103,13 @@ class Companion:
         if c == 0x0F:  # REMOVE_CONTACT
             self.contacts.pop(p[1:33], None)
             return [bytes([0])]
+        if c == 0x09:  # ADD_UPDATE_CONTACT
+            self.contacts[p[1:33]] = (p[100:132].split(b"\0", 1)[0].decode(), p[33])
+            return [bytes([0])]
         if c == 0x20:  # SET_CHANNEL
             self.channels[p[1]] = (p[2:34].split(b"\0", 1)[0], p[34:50])
             return [bytes([0])]
-        if c in (0x03, 0x06, 0x07, 0x09, 0x0C, 0x0D, 0x0E, 0x10, 0x26, 0x36, 0x3D, 0x3F):
+        if c in (0x03, 0x06, 0x07, 0x0C, 0x0D, 0x0E, 0x10, 0x26, 0x36, 0x3D, 0x3F):
             return [bytes([0])]
         return [bytes([1, 1])]  # Befehl nicht unterstützt
 

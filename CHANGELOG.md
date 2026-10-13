@@ -10,6 +10,7 @@
 - Trace mit SNR je Abschnitt, Pfadvorschlag aus dem Kontaktpfad
 - Auto-Antwort pro Kanal mit Auslösewörtern, eigener Vorlage und Schutz gegen Fluten
 - Push-Benachrichtigungen über ntfy, Telegram oder Webhook
+- Gehörte Knoten im Gerät speichern (Kontakte und Karten-Popup), Popup mit „Verwalten“ bzw. „Trace“ für gespeicherte Kontakte
 - Schnellantwort-Vorlage wird jetzt vom Server gefüllt (auch die Vorschau); Docker-Image mit `TZ=Europe/Berlin`
 - Live-Traffic: Rohdaten farbig nach Abschnitten aufgeschlüsselt, Direktlink auf Pakete (`#live/<id>`, auch ältere aus dem Verlauf)
 - Karte: Pakete live animieren, Wiedergabe der letzten 1 h bis 3 Tage im Zeitraffer

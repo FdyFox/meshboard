@@ -863,10 +863,20 @@ class Mesh:
     async def add_contact(self, key):
         c = self.raw_contacts.get(key)
         if not c:
-            raise MeshError("Kontakt unbekannt")
+            c = self._contact_from_node(key)
         await self._lib("add_contact", c)
-        self.contacts[key]["saved"] = True
-        self.emit("contact", c=self.contacts[key])
+        self._upsert_contact(c, True)
+        await self.refresh_contact(key)  # Stand des Geräts übernehmen
+
+    def _contact_from_node(self, key: str) -> dict:
+        """Kontakt (Format der Bibliothek) aus einem nur gehörten Knoten, Pfad unbekannt → Flood."""
+        n = self.nodes.get(key)
+        if not n or len(key) != 64 or n.get("type") not in (1, 2, 3, 4):
+            raise MeshError("Knoten unbekannt – erst ein Advert abwarten")
+        name = (n.get("name") or "").encode()[:31].decode("utf-8", "ignore")
+        return {"public_key": key, "type": n["type"], "flags": 0, "out_path_len": -1, "out_path": "",
+                "out_path_hash_mode": 0, "adv_name": name, "last_advert": int(n.get("advTs") or 0),
+                "adv_lat": n["lat"] if has_pos(n) else 0.0, "adv_lon": n["lon"] if has_pos(n) else 0.0}
 
     # ================= Kanäle =================
     async def load_channels(self):

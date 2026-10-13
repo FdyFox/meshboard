@@ -11,6 +11,7 @@ export function renderContacts(){
   $('#ctable').innerHTML=list.map(n=>{const c=S.contacts.get(n.key);
     const dist=hasPos(n)&&hasPos(S.self)?hav(S.self.lat,S.self.lon,n.lat,n.lon).toFixed(1)+' km':'–';
     let act='';
+    if(!c&&n.type>=1&&n.type<=4)act+=`<button class="sm" data-act="addContact" data-key="${n.key}" title="Im Gerät speichern"${on}>＋</button> `;
     if(c){if(c.type===1||c.type===3)act+=`<button class="sm" data-act="openChat" data-key="${n.key}">💬</button> `;
       if(!c.saved)act+=`<button class="sm" data-act="addContact" data-key="${n.key}" title="Im Gerät speichern"${on}>＋</button> `;
       else act+=`<button class="sm" data-act="resetPath" data-key="${n.key}" title="Pfad zurücksetzen"${on}>↺</button> <button class="sm" data-act="shareContact" data-key="${n.key}" title="Per Zero-Hop teilen"${on}>⇪</button> <button class="sm danger" data-act="removeContact" data-key="${n.key}" title="Löschen"${on}>🗑</button> `}
