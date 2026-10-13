@@ -32,10 +32,10 @@ def frame(p: bytes) -> bytes:
     return b">" + struct.pack("<H", len(p)) + p
 
 
-def room_payload(room: str, text: str) -> bytes:
+def room_payload(room: str, text: str, secret: bytes = None, ts: int = None) -> bytes:
     """Verschlüsselte Nachricht eines Hashtag-Raums (Kanal-Hash | MAC | AES-ECB)."""
-    secret = hashlib.sha256(("#" + room).encode()).digest()[:16]
-    plain = struct.pack("<I", int(time.time())) + b"\0" + text.encode()
+    secret = secret or hashlib.sha256(("#" + room).encode()).digest()[:16]
+    plain = struct.pack("<I", ts or int(time.time())) + b"\0" + text.encode()
     plain += bytes(-len(plain) % 16)
     cipher = AES.new(secret, AES.MODE_ECB).encrypt(plain)
     mac = hmac.new(secret, cipher, hashlib.sha256).digest()[:2]
@@ -134,6 +134,20 @@ class Companion:
                 w.write(frame(bytes([0x88, 3 * 4, (-97) & 255]) + raw))
             await w.drain()
 
+    def echo(self, w, p):
+        """Gesendete Nachricht von Repeatern weitergeleitet hören: 5c direkt (doppelt), 7a über 2 Hops."""
+        if p[0] == 0x03 and p[2] in self.channels:  # Kanal: [3, Typ, Index, ts, Text]
+            pl = room_payload("", self.name + ": " + p[7:].decode(), self.channels[p[2]][1], struct.unpack_from("<I", p, 3)[0])
+            typ = 5
+        elif p[0] == 0x02:  # Direkt: Ziel- und Absender-Byte, Rest verschlüsselt
+            pl, typ = CONTACT_KEY[:1] + SELF_KEY[:1] + os.urandom(18), 2
+        else:
+            return
+        loop = asyncio.get_running_loop()
+        for dt, path in [(0.3, b"\x5c"), (0.6, b"\x5c\x7a"), (0.9, b"\x5c")]:
+            raw = bytes([(typ << 2) | 1, len(path)]) + path + pl
+            loop.call_later(dt, lambda raw=raw: w.write(frame(bytes([0x88, 6 * 4, (-92) & 255]) + raw)))
+
     async def handle(self, r, w):
         task = asyncio.create_task(self.pushes(w))
         buf = b""
@@ -148,6 +162,7 @@ class Companion:
                     for out in self.reply(p):
                         w.write(frame(out))
                     await w.drain()
+                    self.echo(w, p)
                     if p[0] == 0x02:
                         asyncio.get_running_loop().call_later(
                             1, lambda: w.write(frame(bytes([0x82]) + ACK + struct.pack("<I", 1234))))

@@ -75,3 +75,16 @@ def test_guess_region():
     code = region_code("trier", 5, pl)
     assert guess_region(5, pl, code) == "trier"
     assert guess_region(5, pl, code, skip={"trier"}) is None
+
+
+def test_packet_layout():
+    from backend.packets import packet_layout
+    raw = advert(hops=b"\x5c\x7a")
+    segs = packet_layout(raw)
+    labels = [s[0] for s in segs]
+    assert labels[:4] == ["Header: FLOOD, ADVERT, v1", "Pfadlänge: 2 Hops à 1 Byte", "Hop 1", "Hop 2"]
+    assert labels[4:] == ["Public Key", "Zeitstempel", "Signatur", "Flags (Typ, Position, Name)", "Breite / Länge", "Name"]
+    assert segs[0][1] == 0 and segs[-1][2] == len(raw)
+    assert all(a[2] == b[1] for a, b in zip(segs, segs[1:]))  # lückenlos
+    # abgeschnittenes Paket: nichts über das Ende hinaus
+    assert packet_layout(raw[:10])[-1][2] == 10 and packet_layout(b"") == []

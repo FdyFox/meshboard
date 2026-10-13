@@ -1,5 +1,5 @@
 """Paketverlauf: speichern, nach Neustart laden, Statistik."""
-from backend.mesh import Mesh
+from backend.mesh import Mesh, now_ms
 from backend.store import Store
 from tests.test_packets import advert
 
@@ -40,7 +40,7 @@ def test_packet_stats(tmp_path):
     assert (rep["adverts"], rep["count"]) == (1, 4)  # ein Advert, viermal gehört
     assert dict(st["hashSize"]) == {1: 1} and st["timeline"][-1]["snr"] is not None
     assert {n["hash"]: n["count"] for n in st["neighbors"]} == {"5c": 4, "cd": 1}
-    assert st["repeaters"] == [{"hash": "5c", "count": 1, "name": None, "type": None}]  # eindeutig gezählt
+    assert st["repeaters"] == [{"hash": "5c", "count": 1, "name": None, "guess": False, "type": None}]  # eindeutig gezählt
     assert {n["name"] for n in st["newNodes"]} == {"Rep", "Other"}
     assert sum(c for _, c in st["hourly"]) == 5
     assert m.packet_stats(24 * 7)["bucketMs"] == 6 * 3600000
@@ -134,6 +134,10 @@ def test_node_stats(tmp_path):
     assert st["node"]["name"] == "Rep" and st["paths"][0]["path"] == "5c" and st["paths"][0]["count"] == 3
     assert st["recent"][0]["hops"] == 1 and st["snr"] == 3.0
     assert sum(b["adverts"] for b in st["buckets"]) == 1
+    # Nachbarn im Netz: 5c hat das Advert gehört, 11 hat Third an Rep übergeben
+    assert [(p["hash"], p["out"], p["in"]) for p in st["peers"]] == [("5c", 1, 0), ("11", 0, 1)]
+    assert [(v["hash"], v["count"]) for v in st["via"]] == [("5c", 3)] and st["via"][0]["snr"] == 6.0
+    assert sum(c for _, c in st["hourly"]) == 5 and dict(st["snrDist"]) == {2.5: 1, 0.0: 1}
     # nur Hash bekannt (mehrdeutig/unbekannt): Weiterleitungen trotzdem
     st = m.node_stats(None, "11", 24)
     assert st["key"] is None and st["relayed"] == 1 and st["adverts"] == 0
@@ -186,3 +190,81 @@ def test_route_distance(tmp_path):
     direct = {"from": "?", "hops": 0}
     m._route(direct, None)  # Absender unbekannt: keine Strecke
     assert direct["km"] is None and direct["noloc"] == 1
+
+
+def _node(key, name, lat=None, lon=None, typ=2, heard=None):
+    n = {"key": key, "name": name, "type": typ, "heard": heard or now_ms()}
+    if lat is not None:
+        n.update(lat=lat, lon=lon)
+    return n
+
+
+def test_resolve_path_ambiguous(tmp_path):
+    m = make(tmp_path)
+    m.self = {"name": "Ich", "lat": 49.0, "lon": 7.0}
+    m.nodes = {n["key"]: n for n in [
+        _node("5c" + "11" * 31, "Nah", 49.05, 7.0), _node("5c" + "22" * 31, "Fern", 52.5, 13.4),  # zwei Repeater auf 5c
+        _node("5c" + "33" * 31, "Handy", 49.0, 7.0, typ=1),  # Companion leitet nicht weiter
+        _node("77" + "11" * 31, "Mitte", 49.2, 7.0), _node("77" + "22" * 31, "Weg", 48.0, 9.0),
+        _node("aa" * 32, "Alice", 49.4, 7.0, typ=1)]}
+    r = m.resolve_path(["77", "5c"], m.nodes["aa" * 32], m.self)
+    assert [(x["name"], x["n"], x["guess"]) for x in r] == [("Mitte", 2, True), ("Nah", 2, True)]
+    assert m.resolve_path(["99"])[0] == {"h": "99", "key": None, "n": 0, "guess": False, "name": None}
+    # ohne Positionen bleibt der Hop offen
+    m.nodes = {n["key"]: n for n in [_node("5c" + "11" * 31, "A"), _node("5c" + "22" * 31, "B")]}
+    assert m.resolve_path(["5c"])[0]["name"] == "A / B" and m.resolve_path(["5c"])[0]["key"] is None
+
+
+def test_hash_collisions(tmp_path):
+    m = make(tmp_path)
+    m.dev = {"pathHashMode": 0}
+    m.nodes = {n["key"]: n for n in [
+        _node("5c11" + "00" * 30, "R1"), _node("5c11" + "ff" * 30, "R2"), _node("5c22" + "00" * 30, "R3"),
+        _node("5c33" + "00" * 30, "Handy", typ=1), _node("5c44" + "00" * 30, "Alt", heard=1)]}
+    c = m.hash_collisions(now_ms() - 86400000)
+    assert c["active"] == 3 and c["mode"] == 0
+    assert [(g["hash"], sorted(n["name"] for n in g["nodes"])) for g in c["b1"]] == [("5c", ["R1", "R2", "R3"])]
+    assert [g["hash"] for g in c["b2"]] == ["5c11"] and c["b3"] == []
+
+
+def test_watch_nodes(tmp_path):
+    import pytest
+    from backend.mesh import MeshError
+    m = make(tmp_path)
+    events = []
+    m.emit = lambda t, **d: events.append((t, d))
+    key = "ab" * 32
+    m.on_raw_packet(advert(name=b"Rep"), 5.0, -90)
+    with pytest.raises(MeshError):
+        m.set_watch("cd" * 32, 12)
+    m.up_since = now_ms() - 48 * 3600000
+    m.set_watch(key, 12)
+    assert not m.watch[key]["down"]
+    m.nodes[key]["heard"] = now_ms() - 13 * 3600000
+    m.check_watch()
+    assert m.watch[key]["down"] and ("watch_alert", {"key": key, "name": "Rep", "down": True,
+                                                    "last": m.nodes[key]["heard"]}) in events
+    assert make(tmp_path).watch[key]["down"]  # gespeichert
+    m.on_raw_packet(advert(name=b"Rep", lat=49.31), 5.0, -90)  # wieder gehört
+    assert not m.watch[key]["down"] and [d["down"] for t, d in events if t == "watch_alert"] == [True, False]
+    # gerade erst verbunden: noch keine Meldung
+    m.up_since = now_ms()
+    m.nodes[key]["heard"] = 1
+    m.check_watch()
+    assert not m.watch[key]["down"]
+    m.set_watch(key, 0)
+    assert key not in m.watch
+
+
+def test_route_stats(tmp_path):
+    m = make(tmp_path)
+    m.self = {"name": "Ich", "key": "ee" * 32, "lat": 49.2, "lon": 7.0}
+    m.on_raw_packet(advert(key=b"\x5c" * 32, name=b"Hop", lat=49.3, lon=7.05, hops=b""), 5.0, -90)
+    for _ in range(2):
+        m.on_raw_packet(advert(key=b"\xab" * 32, name=b"Rep", lat=49.5, lon=7.1, hops=b"\x5c"), 3.0, -99)
+    m._flush()
+    r = m.route_stats(0)
+    assert [(p["path"], p["count"], p["recv"], p["names"]) for p in r["topPaths"]] == [("5c", 1, 2, ["Hop"])]
+    pairs = {tuple(sorted((l["a"]["name"], l["b"]["name"]))): l for l in r["links"]}
+    assert set(pairs) == {("Hop", "Rep"), ("Hop", "Ich")} and not pairs[("Hop", "Rep")]["guess"]
+    assert r["longest"][0]["km"] == max(l["km"] for l in r["links"])

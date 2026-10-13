@@ -125,6 +125,24 @@ def test_send_channel_and_validation(app):
     assert status == 400 and body["detail"] == "Nachricht zu lang"
 
 
+def test_repeats_counted(app):
+    """Weiterleitungen der eigenen Nachricht durch Repeater zählen (je Repeater einmal)."""
+    assert app.json("POST", "/api/messages/send", {"conv": "ch:0", "text": "Echo Kanal"})[0] == 200
+    s = app.wait(lambda s: any(m["text"] == "Echo Kanal" and len(m.get("repeats", [])) == 2 for m in s["msgs"]["ch:0"]))
+    m = next(m for m in s["msgs"]["ch:0"] if m["text"] == "Echo Kanal")
+    assert [r["h"] for r in m["repeats"]] == ["5c", "7a"] and m["repeats"][1]["hops"] == 2
+    time.sleep(1)
+    m = next(m for m in app.state()["msgs"]["ch:0"] if m["text"] == "Echo Kanal")
+    assert len(m["repeats"]) == 2  # Duplikat von 5c nicht doppelt gezählt
+    # Wiederholen: neuer Zeitstempel, Zählung beginnt neu
+    ts = m["ts"]
+    assert app.json("POST", "/api/messages/retry", {"conv": "ch:0", "id": m["id"]})[0] == 200
+    s = app.wait(lambda s: any(x["id"] == m["id"] and x["ts"] > ts and len(x["repeats"]) == 2 for x in s["msgs"]["ch:0"]))
+    # Direktnachricht
+    assert app.json("POST", "/api/messages/send", {"conv": "c:c0ffee111111", "text": "Echo DM"})[0] == 200
+    app.wait(lambda s: any(m["text"] == "Echo DM" and len(m.get("repeats", [])) == 2 for m in s["msgs"]["c:c0ffee111111"]))
+
+
 def test_device_commands(app):
     for path, body in [("/api/advert", {"flood": True}), ("/api/device/position", {"lat": 49.1, "lon": 7.2}),
                        ("/api/device/other", {"locAdv": False}), ("/api/device/tx", {"value": 20}),
@@ -241,3 +259,32 @@ def test_stats_endpoint(app):
     assert st["duty"]["limit"] == 10.0 and "buckets" in st["device"]  # Werte selbst: test_store
     assert st["nodeTypes"]
     assert any(t == "ADVERT" for t, _ in st["types"]) and len(st["timeline"]) >= 24
+    assert st["collisions"]["active"] >= 1 and st["collisions"]["b1"] == []
+
+
+def test_watch_api_and_resolved_hops(app):
+    rep = "ab" + "22" * 31  # Repeater „Rep-Saar“ aus dem Simulator
+    assert app.json("PUT", "/api/watch", {"key": rep, "hours": 6})[0] == 200
+    assert app.state()["settings"]["watch"][rep]["hours"] == 6
+    assert app.json("PUT", "/api/watch", {"key": "00" * 32, "hours": 6})[1]["detail"] == "Knoten unbekannt"
+    assert app.json("PUT", "/api/watch", {"key": rep, "hours": 0})[0] == 200
+    assert rep not in app.state()["settings"]["watch"]
+    # Pakete tragen die Zuordnung ihrer Hops (5c ist im Simulator kein bekannter Knoten)
+    assert any(p.get("res") == [[None, 0]] for p in app.state()["packets"] if p["path"] == ["5c"])
+
+
+def test_replay_and_layout(app):
+    st = app.json("GET", "/api/packets/replay?hours=1")[1]
+    # Adverts von Rep-Saar: Start mit Position → (Hop 5c unbekannt) → eigene Node
+    assert st["items"] and all(len(i[2]) >= 2 for i in st["items"]) and any(i[1] == 4 for i in st["items"])
+    assert st["items"][0][2][0] == [49.3, 7.1] and not st["truncated"]
+    segs = app.json("GET", "/api/packets/layout?raw=" + app.state()["packets"][-1]["raw"])[1]
+    assert segs[0][0].startswith("Header:")
+    assert app.json("GET", "/api/packets/layout?raw=zz")[0] == 400
+
+
+def test_packet_link(app):
+    p = app.state()["packets"][-1]
+    assert app.json("GET", f"/api/packets/{p['id']}")[1]["raw"] == p["raw"]
+    assert app.json("GET", "/api/packets/999999999")[0] == 400
+    assert app.call("GET", "/api/packets/export?fmt=json")[0] == 200  # feste Pfade gehen weiter vor
