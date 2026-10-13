@@ -1,0 +1,21 @@
+name: meshboard  # Compose-Projekt (Image, Netzwerk) unabhängig vom Ordnernamen
+services:
+  meshboard:
+    build: .
+    container_name: meshboard
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Knoten, Chatverläufe, Einstellungen (SQLite) – derselbe Ordner wie beim Start ohne Docker.
+      # Muss UID 1000 gehören (Benutzer im Container): mkdir -p data && sudo chown 1000 data
+      - ./data:/data
+    environment:
+      # Node per TCP/WiFi …
+      MESHCORE_HOST: 192.168.1.24
+      MESHCORE_PORT: 5003
+      # PACKET_DAYS: 365  # Paketverlauf für die Statistik (Tage)
+      # … oder per USB (dann zusätzlich "devices" freigeben):
+      # MESHCORE_SERIAL: /dev/ttyUSB0
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
