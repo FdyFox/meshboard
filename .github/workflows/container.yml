@@ -1,0 +1,167 @@
+# Testet jede Änderung und veröffentlicht Multi-Arch-Images auf GHCR.
+#
+#   Push auf main          -> ghcr.io/<owner>/meshboard:test und :sha-<commit>
+#   Veröffentlichtes Release -> :<version>, :<major>.<minor>, :latest (kein latest bei Pre-Releases)
+#   Pull Request           -> nur Tests und Image-Build, nichts wird veröffentlicht
+#
+# Releases werden als v<Version> getaggt (z. B. v0.2.0), passend zu __version__ in
+# backend/__init__.py und einem Abschnitt "## <Version>" in CHANGELOG.md.
+name: Container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.event_name }}-${{ github.ref }}
+  # Überholte main-/PR-Builds werden abgebrochen, ein Release-Build läuft immer durch.
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r requirements-dev.txt
+
+      - name: Syntax prüfen (Python und JavaScript)
+        run: |
+          .venv/bin/python -m compileall -q backend tests
+          for f in frontend/js/*.js; do node --check --input-type=module < "$f" || { echo "::error file=$f::Syntaxfehler"; exit 1; }; done
+
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
+
+      - name: Release-Version prüfen
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          code="$(sed -n 's/^__version__ = "\(.*\)".*$/\1/p' backend/__init__.py)"
+          if [ "$tag" != "$code" ]; then
+            echo "::error::Release-Tag $GITHUB_REF_NAME passt nicht zu __version__ \"$code\" in backend/__init__.py"
+            exit 1
+          fi
+          if ! grep -qx "## $code" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md hat keinen Abschnitt '## $code'"
+            exit 1
+          fi
+
+  image:
+    name: Image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Image-Name und Version bestimmen
+        id: vars
+        run: |
+          # GHCR verlangt Kleinbuchstaben.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/meshboard" >> "$GITHUB_OUTPUT"
+          base="$(sed -n 's/^__version__ = "\(.*\)".*$/\1/p' backend/__init__.py)"
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # Test-Images nennen den genauen Commit in --version.
+            version="${base}-test.${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Image-Metadaten
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=test,enable=${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.event_name != 'release' }}
+            type=ref,event=pr
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.vars.outputs.version }}
+            org.opencontainers.image.title=Meshboard
+            org.opencontainers.image.description=Web-App und Station für MeshCore-Companions
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Bei GHCR anmelden
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bauen und veröffentlichen
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.vars.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-Test des veröffentlichten Images
+        if: github.event_name != 'pull_request'
+        env:
+          REF: ${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}
+          EXPECTED: meshboard ${{ steps.vars.outputs.version }}
+        run: |
+          actual="$(docker run --rm "$REF" --version)"
+          echo "$actual"
+          if [ "$actual" != "$EXPECTED" ]; then
+            echo "::error::Erwartet '$EXPECTED', erhalten '$actual'"
+            exit 1
+          fi
+          docker run --rm "$REF" --help > /dev/null
+          # Ohne Node starten: Der Server muss im Container auf 0.0.0.0 lauschen (BIND) und antworten.
+          docker run -d --name smoke -p 18080:8080 "$REF"
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:18080/healthz > /dev/null && break; sleep 1; done
+          if ! curl -sf http://127.0.0.1:18080/api/version | grep -q "\"version\":\"${{ steps.vars.outputs.version }}\""; then
+            echo "::error::Der Server im Image antwortet nicht (oder lauscht nicht auf 0.0.0.0)"
+            docker logs smoke
+            exit 1
+          fi
+          curl -sf http://127.0.0.1:18080/ | grep -q "<title>Meshboard</title>"
+          docker rm -f smoke > /dev/null
+
+      - name: Zusammenfassung
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Veröffentlichtes Image"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            echo "$TAGS" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
