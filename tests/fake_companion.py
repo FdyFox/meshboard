@@ -26,6 +26,7 @@ REGION = "saarland"
 ACK = b"\x01\x02\x03\x04"
 CAND_ROOM, CAND_REGION = "technik", "trier"  # nur über die eingebaute Namensliste erkennbar
 SECRET_ROOM = "geheimraum"                     # nur über „#Raum suchen“ erkennbar
+REP_PW = "Rep#Pw42"                             # Admin-Passwort von Rep-Saar
 
 
 def frame(p: bytes) -> bytes:
@@ -91,6 +92,8 @@ class Companion:
             return [bytes([24, 2]) + struct.pack("<IIIIIII", 10, 5, 3, 2, 8, 2, 0)]
         if c == 0x02:  # SEND_TXT → SENT, ACK folgt
             return [bytes([6, 0]) + ACK + struct.pack("<I", 3000)]
+        if c in (0x1A, 0x32, 0x24):  # Login, binäre Anfrage, Trace → SENT, Antwort folgt (remote)
+            return [bytes([6, 0]) + self.tag(p) + struct.pack("<I", 2000)]
         if c == 0x1E:  # GET_CONTACT_BY_KEY
             k = p[1:33]
             return [self.contact(k)] if k in self.contacts else [bytes([1, 2])]
@@ -134,6 +137,37 @@ class Companion:
                 w.write(frame(bytes([0x88, 3 * 4, (-97) & 255]) + raw))
             await w.drain()
 
+    @staticmethod
+    def tag(p: bytes) -> bytes:
+        """Erwartete Antwort-Kennung (expected_ack) – aus dem Befehl abgeleitet, damit remote() sie kennt."""
+        return hashlib.sha256(p).digest()[:4]
+
+    def remote(self, w, p):
+        """Antworten aus dem Netz auf Login, Status, Nachbarn, CLI und Trace (Repeater Rep-Saar)."""
+        loop, out = asyncio.get_running_loop(), []
+        if p[0] == 0x1A:
+            ok = p[1:33] == REP_KEY and p[33:].decode() == REP_PW
+            out.append(bytes([0x85, 1]) + REP_KEY[:6] + struct.pack("<I", int(time.time())) + bytes([3, 1]) if ok
+                       else bytes([0x86, 0]) + p[1:7])
+        elif p[0] == 0x32 and p[1:33] == REP_KEY and p[33] == 0x01:  # STATUS
+            st = struct.pack("<HHhhIIIIIIIIHhHHII", 4105, 0, -112, -80, 1000, 500, 120, 86400, 300, 200, 700, 300,
+                             0, 26, 3, 40, 90, 2)
+            out.append(bytes([0x8C, 0]) + self.tag(p) + st)
+        elif p[0] == 0x32 and p[1:33] == REP_KEY and p[33] == 0x06:  # NEIGHBOURS
+            nb = [(SELF_KEY[:4], 60, 28), (CONTACT_KEY[:4], 600, -10)]
+            out.append(bytes([0x8C, 0]) + self.tag(p) + struct.pack("<hh", len(nb), len(nb))
+                       + b"".join(k + struct.pack("<ib", s, q) for k, s, q in nb))
+        elif p[0] == 0x02 and p[1] == 1 and p[7:13] == REP_KEY[:6]:  # CLI an den Repeater
+            self.pending.append(bytes([16, 6 * 4, 0, 0]) + REP_KEY[:6] + bytes([0xFF, 1]) + p[3:7]
+                                + b"> " + p[13:] + b" ok")
+            out.append(bytes([0x83]))
+        elif p[0] == 0x24:  # Trace: SNR je Hop 6, 5, 4 … dB, zurück bei uns 7 dB
+            hashes = p[10:]
+            out.append(bytes([0x89, 0, len(hashes), p[9]]) + p[1:9] + hashes
+                       + bytes([(6 - i) * 4 & 255 for i in range(len(hashes))]) + bytes([28]))
+        for o in out:
+            loop.call_later(0.3, lambda o=o: w.write(frame(o)))
+
     def echo(self, w, p):
         """Gesendete Nachricht von Repeatern weitergeleitet hören: 5c direkt (doppelt), 7a über 2 Hops."""
         if p[0] == 0x03 and p[2] in self.channels:  # Kanal: [3, Typ, Index, ts, Text]
@@ -163,6 +197,7 @@ class Companion:
                         w.write(frame(out))
                     await w.drain()
                     self.echo(w, p)
+                    self.remote(w, p)
                     if p[0] == 0x02:
                         asyncio.get_running_loop().call_later(
                             1, lambda: w.write(frame(bytes([0x82]) + ACK + struct.pack("<I", 1234))))

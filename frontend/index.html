@@ -73,6 +73,7 @@
       </div>
       <div class="chatmain">
         <div class="chathead" id="chathead"><span class="muted">Kanal oder Kontakt wählen</span></div>
+        <div id="autoWrap"></div>
         <div class="msgs" id="msgs"></div>
         <div class="compose">
           <input id="msgIn" placeholder="Nachricht…" disabled maxlength="200">
@@ -183,6 +184,14 @@
               <p class="muted" style="margin:4px 0 0">Die Antwort geht ins Netz: Zahlen mit Dezimalpunkt, „direct“ und „no region“ auf Englisch.</p>
             </details>
             <label class="frm"><input type="checkbox" id="setNotify"> Desktop-Benachrichtigungen in diesem Browser</label>
+            <h4 class="muted small" style="margin:12px 0 4px">Push aufs Handy</h4>
+            <div class="frm"><select id="pushType"><option value="">aus</option><option value="ntfy">ntfy</option><option value="telegram">Telegram</option><option value="webhook">Webhook (JSON)</option></select></div>
+            <div class="frm" id="pushUrlRow"><input id="pushUrl" placeholder="https://ntfy.sh/mein-geheimes-thema" style="flex:1;min-width:0"></div>
+            <div class="frm" id="pushChatRow"><input id="pushChat" placeholder="Chat-ID" style="flex:1;min-width:0"></div>
+            <div class="frm" id="pushTokenRow"><input id="pushToken" type="password" autocomplete="off" style="flex:1;min-width:0"><button class="sm" id="btnPushClrTok" title="Gespeicherten Token entfernen">✕</button></div>
+            <div class="frm small" id="pushEvents"><label><input type="checkbox" data-k="dm"> Direktnachrichten</label><label><input type="checkbox" data-k="mention"> Erwähnungen</label><label><input type="checkbox" data-k="chan"> Kanäle (Benachrichtigung „Alle“)</label><label><input type="checkbox" data-k="watch"> Beobachtete Knoten</label></div>
+            <div class="frm"><button id="btnPushSave">Speichern</button><button id="btnPushTest">Test senden</button></div>
+            <p class="muted small" id="pushHelp" style="margin:0"></p>
             <h4 class="muted small" style="margin:12px 0 4px">Daten auf dem Server</h4>
             <div class="frm"><button id="btnWipe" class="danger">Gespeicherte Daten löschen</button></div>
             <p class="muted small" style="margin:0">Löscht gespeicherte Knoten, Chatverläufe, gehörte Räume, Paketverlauf und Gerätewerte. Auf dem Gerät wird nichts gelöscht.</p>
@@ -216,5 +225,6 @@
 <div id="toasts"></div>
 <div class="gs" id="gs"><div class="gs-in"><input id="gsIn" placeholder="Knoten, Kanäle, Nachrichten suchen…" aria-label="Suchen" autocomplete="off"><div id="gsList"></div></div></div>
 <div class="drawer" id="nodeDrawer"><div class="drawer-in" id="nodeDrawerBody"></div></div>
+<div class="drawer top" id="remoteDrawer"><div class="drawer-in" id="remoteBody"></div></div>
 </body>
 </html>

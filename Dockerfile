@@ -16,6 +16,7 @@ ENV PORT=8080 \
     BIND=0.0.0.0 \
     DATA_DIR=/data \
     PYTHONUNBUFFERED=1 \
+    TZ=Europe/Berlin \
     MESHBOARD_VERSION=$VERSION
 
 VOLUME /data

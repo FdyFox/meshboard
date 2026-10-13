@@ -6,6 +6,11 @@
 - Chat: Kanalnachrichten, die nach 60 s kein Repeater weitergeleitet hat, lassen sich erneut senden
 - Statistik › Knoten: Hash-Kollisionen (aktive Repeater mit gleichem Hop-Hash bei 1, 2 und 3 Byte), Hinweis in der Übersicht
 - Knoten beobachten: Meldung, wenn ein Knoten länger als die Schwelle nicht gehört wurde und wenn er wieder da ist
+- Repeater verwalten: Anmeldung, Status, Nachbarliste und CLI-Konsole für Repeater und Room-Server
+- Trace mit SNR je Abschnitt, Pfadvorschlag aus dem Kontaktpfad
+- Auto-Antwort pro Kanal mit Auslösewörtern, eigener Vorlage und Schutz gegen Fluten
+- Push-Benachrichtigungen über ntfy, Telegram oder Webhook
+- Schnellantwort-Vorlage wird jetzt vom Server gefüllt (auch die Vorschau); Docker-Image mit `TZ=Europe/Berlin`
 - Live-Traffic: Rohdaten farbig nach Abschnitten aufgeschlüsselt, Direktlink auf Pakete (`#live/<id>`, auch ältere aus dem Verlauf)
 - Karte: Pakete live animieren, Wiedergabe der letzten 1 h bis 3 Tage im Zeitraffer
 - Globale Suche (Strg+K oder /) über Knoten, Kontakte, Kanäle, Räume und Nachrichten

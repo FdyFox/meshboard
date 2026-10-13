@@ -42,6 +42,28 @@ class Text(BaseModel):
     value: str = ""
 
 
+class Remote(BaseModel):
+    key: str
+    password: str | None = None
+    remember: bool | None = None
+    cmd: str = ""
+
+
+class Push(BaseModel):
+    type: str = ""
+    url: str = ""
+    chat: str = ""
+    token: str | None = None  # None: gespeicherten Token behalten
+    events: dict = {}
+
+
+class AutoReply(BaseModel):
+    on: bool = False
+    words: list[str] | str = []
+    tpl: str = ""
+    cooldown: float = 300
+
+
 class Watch(BaseModel):
     key: str
     hours: float = 0
@@ -160,6 +182,12 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         await M(request).send_msg(b.conv, b.text)
         return ok
 
+    @app.post("/api/messages/ack")
+    async def send_ack(request: Request, b: Retry):
+        """Schnellantwort auf eine Nachricht (Vorlage füllt der Server)."""
+        await M(request).send_ack(b.conv, b.id)
+        return ok
+
     @app.post("/api/messages/retry")
     async def retry(request: Request, b: Retry):
         await M(request).retry_msg(b.conv, b.id)
@@ -224,9 +252,54 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         M(request).set_notify(key, b.value)
         return ok
 
+    # ---- Repeater verwalten & Trace ----
+    @app.get("/api/remote")
+    async def remote_info(request: Request, key: str):
+        return M(request).remote_info(key)
+
+    @app.post("/api/remote/login")
+    async def remote_login(request: Request, b: Remote):
+        return await M(request).remote_login(b.key, b.password, b.remember)
+
+    @app.post("/api/remote/status")
+    async def remote_status(request: Request, b: Remote):
+        return await M(request).remote_status(b.key)
+
+    @app.post("/api/remote/neighbours")
+    async def remote_neighbours(request: Request, b: Remote):
+        return await M(request).remote_neighbours(b.key)
+
+    @app.post("/api/remote/cli")
+    async def remote_cli(request: Request, b: Remote):
+        await M(request).remote_cli(b.key, b.cmd)
+        return ok
+
+    @app.post("/api/trace")
+    async def trace(request: Request, b: Text):
+        return await M(request).trace(b.value)
+
     @app.put("/api/watch")
     async def set_watch(request: Request, b: Watch):
         M(request).set_watch(b.key, b.hours)
+        return ok
+
+    @app.post("/api/settings/ack-preview")
+    async def ack_preview(request: Request, b: Text):
+        return M(request).ack_preview(b.value)
+
+    @app.put("/api/settings/auto-reply")
+    async def auto_reply(request: Request, b: AutoReply, key: str):
+        M(request).set_auto_reply(key, b.on, b.words, b.tpl, b.cooldown)
+        return ok
+
+    @app.put("/api/settings/push")
+    async def set_push(request: Request, b: Push):
+        M(request).set_push(b.model_dump())
+        return ok
+
+    @app.post("/api/push/test")
+    async def test_push(request: Request):
+        await M(request).test_push()
         return ok
 
     @app.put("/api/settings/extra-regions")

@@ -21,7 +21,7 @@ export function onMsg(conv,m,isNew){
   const arr=S.msgs[conv]||(S.msgs[conv]=[]);
   const i=arr.findIndex(x=>x.id===m.id);
   if(i>=0)arr[i]=m;else{arr.push(m);if(arr.length>500)arr.splice(0,arr.length-500)}
-  if(isNew&&i<0&&m.dir==='in'&&!(ui.tab==='chat'&&S.active===conv&&!document.hidden)){
+  if(isNew&&i<0&&m.dir==='in'&&!m.cli&&!(ui.tab==='chat'&&S.active===conv&&!document.hidden)){  // CLI-Antworten zeigt die Konsole
     S.unread[conv]=(S.unread[conv]||0)+1;
     if(counts(conv,m)){S.alert[conv]=(S.alert[conv]||0)+1;notify(conv,m)}}
   renderSoon();
@@ -65,8 +65,11 @@ function renderConv(){
     const names=new Set(knownRegionNames());if(cur&&cur!=='-')names.add(cur);
     let opts=`<option value="">Standard (${S.scope&&S.scope.name?'#'+esc(S.scope.name):'keine Region'})</option><option value="-">Ohne Region (ungefiltert)</option>`;
     [...names].sort().forEach(n=>opts+=`<option value="${esc(n)}">#${esc(n)}</option>`);opts+='<option value="+">Andere Region…</option>';
-    head+=`<span class="muted">Gruppenkanal – keine Zustellbestätigung</span><span class="spacer"></span>${modeSelect(conv)}<label class="muted" for="chRegion">Region</label><select id="chRegion">${opts}</select>`}
+    const ar=S.settings.autoReply?.[notifyKey(conv)];
+    head+=`<span class="muted">Gruppenkanal</span><span class="spacer"></span>${modeSelect(conv)}<label class="muted" for="chRegion">Region</label><select id="chRegion">${opts}</select><button class="sm${ar?.on?' on':''}" data-act="autoBox" title="Automatisch auf Auslösewörter antworten">🤖 ${ar?.on?'an':'aus'}</button>`;
+  }
   $('#chathead').innerHTML=head;
+  if(autoOpen&&autoOpen!==conv){autoOpen=null;$('#autoWrap').innerHTML=''}  // Formular nur beim Öffnen zeichnen (sonst gehen Eingaben verloren)
   const ns=$('#notifySel');
   if(ns)ns.onchange=async()=>{const key=notifyKey(conv),prev=notifyMode(conv);
     if(!await run('settings/notify?key='+encodeURIComponent(key),{value:ns.value},null,'PUT'))ns.value=prev;
@@ -82,6 +85,7 @@ function renderConv(){
     const meta=m.dir==='in'?`<span class="from">${esc(m.from)}</span> · ${dtfmt(m.ts||m.rx)}${m.snr!=null?` · <span class="${snrCls(m.snr)}">SNR ${m.snr.toFixed(1)}</span>`:''}${m.hops!=null?' · '+(m.hops==='direkt'?'direkt':m.hops+' Hops'):''}${m.hashBytes?` · <span class="hash" title="Pfad-Hash-Größe">${m.hashBytes}B</span>`:''}${m.region?(m.region==='-'?' · <span class="hash" title="Region">ohne Region</span>':` · <span class="hash known" title="Region">#${esc(m.region)}</span>`):m.regionCode?` · <span class="hash" title="Unbekannte Region – Namen unter Gerät › Region & Routing eintragen">Region ?${m.regionCode}</span>`:''}${replyBtns(conv,m)}`:dtfmt(m.rx);
     let st='',cls='';if(m.dir==='out'){const ch=conv.startsWith('ch:'),rg=ch&&m.region?(m.region==='-'?' (ohne Region)':' (#'+esc(m.region)+')'):'';
       st={sending:'⏳ sende…',sent:ch?'✓ gesendet'+rg:'↗ '+(m.flood?'Flood':'Direkt')+', warte auf ACK…',ok:'✓✓ zugestellt'+(m.rtt?' ('+(m.rtt/1000).toFixed(1)+' s)':''),noack:ch?'kein Repeater gehört':'⚠ keine Bestätigung',fail:'✗ Fehler: '+esc(m.err||'')}[m.status]||'';
+      if(m.auto)st='<span title="Automatische Antwort">🤖</span> '+st;
       if(m.repeats&&m.status!=='sending'&&m.status!=='fail')st=repTag(m)+(ch?(m.status==='sent'?'':' · '+st)+rg:' · '+st);
       cls=m.status==='ok'?'ok':m.status==='fail'||(m.status==='noack'&&!ch)?'fail':'';
       if(m.status==='noack'||m.status==='fail')st+=` <button class="sm" data-act="retry" data-conv="${conv}" data-id="${m.id}">↻ erneut</button>`}
@@ -93,23 +97,19 @@ function renderConv(){
 const repLine=r=>(r.name||(r.h?r.h:'Repeater'))+(r.h&&r.name?' ('+r.h+')':'')+' · SNR '+r.snr.toFixed(1)+' · '+r.hops+' Hop'+(r.hops===1?'':'s');
 function repTag(m){const n=m.repeats.length;
   return n?`<span class="rep ok" data-act="repeats" title="${esc(n+' Repeater gehört:\n'+m.repeats.map(repLine).join('\n'))}">✓ ${n}</span>`:'<span class="rep" title="Gesendet – noch kein Repeater gehört">✓</span>'}
-// Schnellantwort aus der Vorlage (Gerät › App); unbekannte Platzhalter bleiben stehen.
-// short: langen Pfad auf Anfang und Ende kürzen (wenn die Antwort sonst nicht in eine Nachricht passt)
-const dec1=v=>v.toFixed(1);  // Antwort geht ins Netz: englisch, Dezimalpunkt
-export function ackText(m,short=false,tpl=S.settings.ackTemplate){
-  const p=m.path,lz=m.ts&&m.rx?(m.rx-m.ts)/1000:null;
-  const pfad=!p?'?':!p.length?'direct':short&&p.length>4?[...p.slice(0,2),'…',...p.slice(-2)].join(','):p.join(',');
-  const v={name:m.from||'?',snr:m.snr!=null?dec1(m.snr):'?',hops:typeof m.hops==='number'?String(m.hops):'?',pfad,
-    km:m.km!=null?dec1(m.km):'?',abschnitte:m.segs!=null?String(m.segs):'?',ohne_pos:m.noloc!=null?String(m.noloc):'?',
-    laufzeit:lz!=null&&lz>=0&&lz<=600?dec1(lz):'?',
-    region:m.region&&m.region!=='-'?'#'+m.region:'no region',zeit:new Date(m.rx||m.ts).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})};
-  Object.assign(v,{time:v.zeit,path:v.pfad,segs:v.abschnitte,noloc:v.ohne_pos,latency:v.laufzeit});  // englische Namen
-  return (tpl||'').replace(/\{(\w+)\}/g,(x,k)=>k in v?v[k]:x);
-}
+// Auto-Antwort pro Kanal: Auslösewörter, eigene Vorlage (leer = Schnellantwort), Sperrzeit je Absender
+let autoOpen=null;
+function autoForm(conv,r={}){r=r||{};const cd=r.cooldown||300;
+  return `<div class="autobox" id="autoBox"><label><input type="checkbox" id="arOn"${r.on?' checked':''}> Auto-Antwort in diesem Kanal</label>
+    <input id="arWords" placeholder="Auslösewörter mit Komma, z. B. test, !ping" value="${esc((r.words||[]).join(', '))}">
+    <input id="arTpl" placeholder="Antwort-Vorlage (leer = Schnellantwort-Vorlage)" value="${esc(r.tpl||'')}" maxlength="150">
+    <label>Sperrzeit je Absender <select id="arCd">${[[60,'1 min'],[300,'5 min'],[900,'15 min'],[3600,'1 h'],[21600,'6 h']].map(([v,l])=>`<option value="${v}"${v==cd?' selected':''}>${l}</option>`).join('')}</select></label>
+    <span><button class="sm" data-act="autoSave">Speichern</button> <button class="sm" data-act="autoBox">Schließen</button></span>
+    <p class="muted small">Antwortet der Server, auch ohne offenen Browser: nur auf ganze Wörter, nicht auf Nachrichten an andere (@[Name]), nicht auf ältere als 10 Minuten, höchstens eine Antwort alle 10 s pro Kanal. Platzhalter wie bei der Schnellantwort.</p></div>`}
 function replyBtns(conv,m){
   if(m.dir!=='in'||conv.startsWith('room:'))return '';
   let h=` <button class="sm rbtn" title="Antworten (@${esc(m.from)})" data-reply="${esc(m.from)}">↩</button>`;
-  h+=` <button class="sm rbtn" title="Schnellantwort senden: ${esc(ackText(m))}" data-ack="${m.id}"${S.connected?'':' disabled'}>✓</button>`;
+  h+=` <button class="sm rbtn" title="Schnellantwort senden (Vorlage unter Gerät › App)" data-ack="${m.id}"${S.connected?'':' disabled'}>✓</button>`;
   if(conv.startsWith('ch:')){const c=[...S.contacts.values()].find(c=>c.name===m.from&&(c.type===1||c.type===3));if(c)h+=` <button class="sm rbtn" title="Direktnachricht an ${esc(m.from)}" data-dm="${c.key}">✉</button>`}
   return h;
 }
@@ -122,16 +122,16 @@ export function initChat(){
   $('#chatlist').addEventListener('click',e=>{const it=e.target.closest('.citem');if(!it)return;S.active=it.dataset.conv;markRead(S.active);renderChat();$('#msgIn').focus()});
   $('#chatSearch').oninput=renderChat;
   $('#msgs').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
-    if(b.dataset.ack){const conv=S.active,m=(S.msgs[conv]||[]).find(x=>x.id===b.dataset.ack);if(!m)return;
-      let text=ackText(m);if(enc.encode(text).length>maxLen())text=ackText(m,true);
-      if(enc.encode(text).length>maxLen())return toast('Schnellantwort zu lang – Vorlage unter Gerät › App kürzen','err');
-      b.disabled=true;run('messages/send',{conv,text}).finally(()=>{b.disabled=false})}
+    if(b.dataset.ack){b.disabled=true;run('messages/ack',{conv:S.active,id:b.dataset.ack}).finally(()=>{b.disabled=false})}  // Vorlage füllt der Server
     else if(b.dataset.reply!=null){const inp=$('#msgIn');const tag=S.active.startsWith('ch:')?'@['+b.dataset.reply+'] ':'';if(tag&&!inp.value.startsWith(tag))inp.value=tag+inp.value.replace(/^@\[[^\]]*\]\s*/,'');inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);updateLen()}
     else if(b.dataset.dm){actions.openChat({key:b.dataset.dm});setTimeout(()=>$('#msgIn').focus(),50)}});
   $('#msgIn').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});$('#msgIn').oninput=updateLen;$('#btnSend').onclick=sendMsg;
   $('#setNotify').checked=store.get('mcw.notify',false);
   $('#setNotify').onchange=async e=>{if(e.target.checked&&'Notification' in window&&Notification.permission!=='granted'){const p=await Notification.requestPermission();if(p!=='granted')e.target.checked=false}store.set('mcw.notify',e.target.checked)};
   actions.repeats=(d,el)=>toast(el.title,'ok');
+  actions.autoBox=()=>{autoOpen=autoOpen===S.active?null:S.active;$('#autoWrap').innerHTML=autoOpen?autoForm(autoOpen,S.settings.autoReply?.[notifyKey(autoOpen)]):''};
+  actions.autoSave=async()=>{const conv=S.active,words=$('#arWords').value;
+    if(await run('settings/auto-reply?key='+encodeURIComponent(notifyKey(conv)),{on:$('#arOn').checked,words,tpl:$('#arTpl').value,cooldown:+$('#arCd').value},'Auto-Antwort gespeichert','PUT')){autoOpen=null;$('#autoWrap').innerHTML=''}};
   actions.retry=d=>run('messages/retry',{conv:d.conv,id:d.id});
   actions.subscribeRoom=d=>run('rooms/'+encodeURIComponent(d.name)+'/subscribe',undefined,chTitle(d.name)+' auf dem Gerät eingerichtet');
   actions.forgetRoom=d=>{if(confirm(chTitle(d.name)+' vergessen? Der mitgelesene Verlauf wird gelöscht.'))run('rooms/'+encodeURIComponent(d.name),undefined,null,'DELETE')};

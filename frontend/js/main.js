@@ -9,6 +9,7 @@ import {initContacts,renderContacts} from './contacts.js';
 import {initDevice,renderLog} from './device.js';
 import {initStats} from './stats.js';
 import {initSearch} from './search.js';
+import {initRemote} from './remote.js';
 
 function applyStatus(st){
   S.status=st;S.connected=st.connected;S.self=st.self;S.dev=st.dev;S.radio=st.radio||{};S.scope=st.scope;S.regions=st.regions||[];
@@ -68,7 +69,7 @@ function online(on){
   w.textContent='Keine Verbindung zum Server – versuche erneut…';
 }
 
-initLive();initChat();initMapTab();initContacts();initDevice();initStats();initSearch();
+initLive();initChat();initMapTab();initContacts();initDevice();initStats();initSearch();initRemote();
 actions.openChat=d=>{S.active='c:'+d.key.slice(0,12);switchTab('chat')};
 // Buttons in generiertem HTML (Tabellen, Popups, Detailansicht)
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el||el.disabled)return;const fn=actions[el.dataset.act];if(fn){e.preventDefault();fn(el.dataset,el)}});

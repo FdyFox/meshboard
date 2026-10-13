@@ -1,6 +1,5 @@
 // Gerät: Verbindung, Infos, Statistik, Einstellungen, Region, Protokoll-Log; Kopfzeile
-import {$,esc,dur,ago,hasPos,toast,chTitle,enc} from './util.js';
-import {ackText} from './chat.js';
+import {$,esc,dur,ago,hasPos,toast,chTitle} from './util.js';
 import {S,ui,onRender,actions,switchTab} from './state.js';
 import {run,api} from './api.js';
 
@@ -34,7 +33,7 @@ export function renderDevice(){
     if(hasPos(s)&&!$('#setLat').value){$('#setLat').value=s.lat.toFixed(5);$('#setLon').value=s.lon.toFixed(5)}}
   if(document.activeElement!==$('#extraRegions'))$('#extraRegions').value=S.settings.extraRegions||'';
   if(document.activeElement!==$('#setAck'))$('#setAck').value=S.settings.ackTemplate||'';
-  ackPreview();
+  ackPreview();pushForm();
   $('#logOn').checked=S.logOn;
   renderNet();renderLog();
 }
@@ -53,12 +52,32 @@ function renderNet(){
   $('#netChans').innerHTML=tbl(['Hash','Kanal / Raum','Pakete','zuletzt'],ch);
   $('#netWatch').innerHTML=S.watchRooms.length?'<span class="muted">Beobachtete Räume:</span> '+S.watchRooms.map(n=>`<span class="hash">${esc(chTitle(n))} <a href="#" data-act="forgetRoom" data-name="${esc(n)}" title="nicht mehr beobachten">✕</a></span>`).join(' '):'';
 }
-// Vorschau der Schnellantwort mit Beispielwerten (Vorlage aus dem Eingabefeld, noch ungespeichert)
-const ACK_SAMPLE={from:'Alice',hops:3,path:['e6c4','0741','78df'],km:48.2,segs:4,noloc:0,snr:5.25,region:'saarland',ts:Date.now()-2400,rx:Date.now()};
+// Vorschau der Schnellantwort mit Beispielwerten (Vorlage aus dem Eingabefeld, noch ungespeichert; füllt der Server)
+let prevTpl=null,prevT=null;
 function ackPreview(){
-  const tpl=$('#setAck').value.trim()||S.settings.ackDefault||'';
-  const t=ackText(ACK_SAMPLE,false,tpl),n=enc.encode(t).length;
-  $('#ackPrev').textContent=t;$('#ackLen').textContent=n+' Byte';$('#ackLen').style.color=n>S.maxTxt?'var(--err)':'';
+  const tpl=$('#setAck').value;if(tpl===prevTpl)return;prevTpl=tpl;clearTimeout(prevT);
+  prevT=setTimeout(async()=>{try{const r=await api('settings/ack-preview',{value:tpl});if(tpl!==prevTpl)return;
+    $('#ackPrev').textContent=r.text;$('#ackLen').textContent=r.bytes+' Byte';$('#ackLen').style.color=r.bytes>S.maxTxt?'var(--err)':''}catch{prevTpl=null}},200);
+}
+// Push: Formular aus den Einstellungen (Token bleibt auf dem Server, nur „gespeichert“ wird angezeigt)
+const PUSH_HELP={'':'Meldungen kommen auch ohne offenen Browser – der Server schickt sie.',
+  ntfy:'App „ntfy“ installieren und dasselbe Thema abonnieren. Das Thema wirkt wie ein Passwort: lang und zufällig wählen. Token nur für geschützte Server.',
+  telegram:'Bot bei @BotFather anlegen (Token), dem Bot schreiben und die Chat-ID z. B. über @userinfobot ermitteln.',
+  webhook:'POST mit JSON {kind, title, text, …} an die Adresse; Token wird als „Authorization: Bearer“ gesendet.'};
+function pushForm(force){
+  const p=S.settings.push||{},t=force?$('#pushType').value:p.type||'';
+  if(!force&&[...document.querySelectorAll('#pushType,#pushUrl,#pushChat,#pushToken,#pushEvents input')].includes(document.activeElement))return;
+  if(!force){$('#pushType').value=t;$('#pushUrl').value=p.url||'';$('#pushChat').value=p.chat||'';
+    document.querySelectorAll('#pushEvents input').forEach(c=>c.checked=!!(p.events||{})[c.dataset.k])}
+  $('#pushUrlRow').style.display=t==='ntfy'||t==='webhook'?'':'none';$('#pushChatRow').style.display=t==='telegram'?'':'none';
+  $('#pushTokenRow').style.display=$('#pushEvents').style.display=$('#btnPushSave').parentNode.style.display=t?'':'none';
+  $('#pushToken').placeholder=p.tokenSet?'Token gespeichert – leer lassen = unverändert':t==='telegram'?'Bot-Token':'Token (optional)';
+  $('#btnPushClrTok').style.display=p.tokenSet?'':'none';$('#pushHelp').textContent=PUSH_HELP[t];
+}
+async function pushSave(tokenClear){
+  const t=$('#pushType').value,tok=$('#pushToken').value.trim(),events={};
+  document.querySelectorAll('#pushEvents input').forEach(c=>events[c.dataset.k]=c.checked);
+  if(await run('settings/push',{type:t,url:$('#pushUrl').value,chat:$('#pushChat').value,token:tokenClear?'':tok||null,events},t?'Push gespeichert':'Push aus','PUT'))$('#pushToken').value='';
 }
 export function renderLog(){if(ui.tab!=='device')return;
   $('#rawlog').textContent=S.log.length?S.log.slice().reverse().join('\n'):S.logOn?'Warte auf Daten …':'Aus. „aufzeichnen“ anhaken, um die rohe Kommunikation zwischen Server und Node mitzuschneiden (TX = Befehl an die Node, RX = Antwort/Meldung, Bytes als Hex; die letzten 300 Zeilen, nur im Speicher).'}
@@ -108,6 +127,9 @@ export function initDevice(){
   $('#setAutoAdd').onchange=async e=>{if(!await run('device/other',{autoAdd:e.target.checked},'Gespeichert'))renderDevice()};
   $('#btnSetAck').onclick=()=>run('settings/ack-template',{value:$('#setAck').value},'Vorlage gespeichert','PUT');
   $('#btnResetAck').onclick=()=>{$('#setAck').value=S.settings.ackDefault||'';ackPreview()};
+  $('#pushType').onchange=()=>{pushForm(true);if(!$('#pushType').value&&S.settings.push?.type)pushSave()};
+  $('#btnPushSave').onclick=()=>pushSave();$('#btnPushClrTok').onclick=()=>pushSave(true);
+  $('#btnPushTest').onclick=()=>run('push/test',undefined,'Testnachricht gesendet');
   $('#setAck').oninput=ackPreview;
   $('#setAck').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#btnSetAck').click()}});  // einzeilig: Enter speichert
   $('#btnTime').onclick=()=>run('device/time',undefined,'Uhrzeit gesetzt');

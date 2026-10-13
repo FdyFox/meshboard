@@ -191,3 +191,11 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
 .gs-i.on,.gs-i:hover{background:var(--panel2)}.gs-e{padding:12px 14px}
 .msg.flash{outline:2px solid var(--accent2)}
 .detail .row{display:flex;gap:6px;flex-wrap:wrap}
+/* Repeater verwalten */
+.drawer.top{z-index:1550}
+.console{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.console .out{color:var(--accent2)}
+/* Auto-Antwort im Chat */
+.autobox{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--panel2)}
+.autobox input:not([type=checkbox]){flex:1 1 220px;min-width:0}.autobox label{display:flex;gap:6px;align-items:center}.autobox p{flex-basis:100%;margin:0}
+button.on{border-color:var(--accent);color:var(--accent)}

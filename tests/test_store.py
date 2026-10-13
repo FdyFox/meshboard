@@ -268,3 +268,79 @@ def test_route_stats(tmp_path):
     pairs = {tuple(sorted((l["a"]["name"], l["b"]["name"]))): l for l in r["links"]}
     assert set(pairs) == {("Hop", "Rep"), ("Hop", "Ich")} and not pairs[("Hop", "Rep")]["guess"]
     assert r["longest"][0]["km"] == max(l["km"] for l in r["links"])
+
+
+def test_fill_template():
+    m = {"from": "Alice", "hops": 3, "path": ["e6", "07", "78", "11", "22"], "km": 48.24, "segs": 4, "noloc": 0,
+         "snr": 5.25, "region": "saarland", "ts": 1_700_000_000_000, "rx": 1_700_000_002_400}
+    t = Mesh.fill_template(m, "@[{name}] {hops} ({pfad}) {km} km {snr} dB {laufzeit} s {region} {latency} {foo}")
+    assert t == "@[Alice] 3 (e6,07,78,11,22) 48.2 km 5.2 dB 2.4 s #saarland 2.4 {foo}"
+    assert Mesh.fill_template(m, "{path}", short=True) == "e6,07,…,11,22"
+    assert Mesh.fill_template({"hops": "direkt", "path": [], "region": "-"}, "{hops} {path} {region} {km}") == "? direct no region ?"
+
+
+def test_auto_reply_rules(tmp_path):
+    import asyncio
+    import pytest
+    from backend.mesh import MeshError
+
+    async def run():
+        m = make(tmp_path)
+        m.self, m.connected = {"name": "Ich"}, True
+        m.channels = [{"idx": 0, "name": "Public", "secret": "8b3387e9c5cdea6a", "hash": "11"}]
+        sent = []
+
+        async def fake_send(conv, text, auto=False):
+            sent.append((conv, text, auto))
+        m.send_msg = fake_send
+        key = "chan:Public:8b3387e9"
+        with pytest.raises(MeshError):
+            m.set_auto_reply(key, True, "", "", 300)
+        m.set_auto_reply(key, True, "test, !ping", "pong {name} {hops}", 300)
+        assert m.settings()["autoReply"][key]["words"] == ["test", "!ping"]
+
+        def msg(frm, text, age=0):
+            return {"dir": "in", "from": frm, "text": text, "ts": now_ms() - age, "rx": now_ms(), "hops": 2}
+        m._auto_check("ch:0", msg("Bob", "Ist das ein Test?"))      # passt
+        m._auto_check("ch:0", msg("Bob", "test"))                   # Sperrzeit je Absender
+        m._auto_check("ch:0", msg("Eve", "!ping"))                  # Mindestabstand je Kanal
+        m._auto_last.clear()
+        m._auto_check("ch:0", msg("Eve", "@[Bob] test"))            # an jemand anderen gerichtet
+        m._auto_check("ch:0", msg("Eve", "testen"))                 # kein ganzes Wort
+        m._auto_check("ch:0", msg("Eve", "test", age=3600_000))     # nachgeholte alte Nachricht
+        m._auto_check("ch:0", msg("Ich", "test"))                   # eigene
+        m._auto_check("ch:0", msg("Eve", "@[ich] !ping"))           # an mich gerichtet
+        await asyncio.sleep(5.5)
+        assert sorted(sent) == [("ch:0", "pong Bob 2", True), ("ch:0", "pong Eve 2", True)]  # Verzögerung zufällig
+    asyncio.run(run())
+
+
+def test_push_events(tmp_path, monkeypatch):
+    import asyncio
+    from backend import push
+    calls = []
+    monkeypatch.setattr(push, "send", lambda cfg, title, text, kind, extra=None: calls.append((kind, title, text)))
+
+    async def run():
+        m = make(tmp_path)
+        m.self = {"name": "Ich"}
+        m.contacts = {"c0ffee" + "11" * 29: {"key": "c0ffee" + "11" * 29, "name": "Bob"}}
+        m.set_push({"type": "ntfy", "url": "https://ntfy.sh/meshboard-test", "token": "geheim",
+                    "events": {"dm": True, "mention": True, "watch": False, "chan": False}})
+        assert "token" not in m.settings()["push"] and m.settings()["push"]["tokenSet"]
+        m.set_push(m.settings()["push"] | {"token": None})  # Token bleibt erhalten
+        assert m.push_cfg["token"] == "geheim"
+        base = {"dir": "in", "ts": now_ms(), "rx": now_ms()}
+        m.add_msg("c:c0ffee111111", base | {"from": "Bob", "text": "Hallo"})
+        m.add_msg("ch:0", base | {"from": "Eve", "text": "Moin"})              # Kanal: aus
+        m.add_msg("ch:0", base | {"from": "Eve", "text": "Hi @[ich]!"})        # Erwähnung
+        m.add_msg("c:c0ffee111111", base | {"from": "Bob", "text": "ver", "cli": True})
+        await asyncio.sleep(0.1)
+        assert calls == [("dm", "Bob", "Bob: Hallo"), ("mention", "Kanal 0", "Eve: Hi @[ich]!")]
+    asyncio.run(run())
+    import pytest
+    from backend.mesh import MeshError
+    m = make(tmp_path)
+    for bad in ({"type": "ntfy", "url": "ntfy.sh/x"}, {"type": "ntfy", "url": "https://ntfy.sh"}, {"type": "telegram"}, {"type": "x"}):
+        with pytest.raises(MeshError):
+            m.set_push(bad)

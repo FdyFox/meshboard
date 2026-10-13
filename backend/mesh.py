@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import logging
+import random
 import re
 import struct
 import time
@@ -15,7 +16,9 @@ import uuid
 from datetime import datetime, timezone
 
 from meshcore import EventType, MeshCore
+from meshcore.parsing import parse_status
 
+from . import push
 from .discovery import PUBLIC_SECRET, RoomIndex, decrypt, guess_region, mac_ok, name_variants, room_secret
 from .packets import PT, ROUTES, airtime_ms, has_pos, hav, match_region, packet_hash, parse_packet, public, region_key
 from .store import MAX_MSGS, Store, bucket_ms
@@ -30,6 +33,10 @@ MAX_TXT = 150        # Byte pro Nachricht
 MAX_LOG = 300        # Zeilen Protokoll-Log
 DEFAULT_ACK = "@[{name}] | received in DE-66346 | {hops} 🐇 ({path}) | {km} km"  # Vorlage für die Schnellantwort
 RETRY_S = 15         # Wartezeit nach fehlgeschlagenem Verbindungsversuch
+AUTO_GAP_S = 10      # Auto-Antwort: höchstens eine je Kanal in diesem Abstand
+AUTO_MAX_AGE_S = 600  # … und nur auf Nachrichten, die höchstens so alt sind (nicht auf nachgeholte)
+PUSH_MAX = 30        # Push: höchstens so viele Meldungen …
+PUSH_WINDOW_S = 600  # … in diesem Zeitfenster
 ECHO_S = 60          # so lange nach dem Senden Wiederholungen der eigenen Nachricht zählen
 FWD = (2, 3)         # Knotentypen, die weiterleiten (Repeater, Room-Server)
 MAX_HOP_KM = 120     # weiter reicht ein Hop praktisch nie; weitere Sprünge gelten bei der Hop-Zuordnung als unplausibel
@@ -132,6 +139,15 @@ class Mesh:
         # Beobachtete Knoten: Schlüssel → {hours: Schwelle, down: verstummt, since: Zeitpunkt der letzten Meldung}
         self.watch: dict = store.get("watchNodes", {})
         self.up_since = 0
+        # Repeater verwalten: Passwörter (nur gemerkte werden gespeichert) und Anmeldungen dieser Sitzung
+        self.remote_pw: dict = store.get("remotePw", {})
+        self.logins: dict = {}  # Schlüssel → {admin, t}
+        # Push-Benachrichtigungen (Token bleibt auf dem Server) und Auto-Antworten pro Kanal
+        self.push_cfg: dict = {"type": "", "url": "", "chat": "", "token": "",
+                               "events": {"dm": True, "mention": True, "watch": True, "chan": False}} | store.get("push", {})
+        self._push_times: list = []
+        self.auto_reply: dict = store.get("autoReply", {})  # Kanal-Schlüssel (chan:Name:Secret) → Regel
+        self._auto_last: dict = {}
         self.channels: list = store.get("channels", [])  # zuletzt vom Gerät gelesen (Namen auch ohne Verbindung)
         self.packets: list = []
         self.pkt_seq = 0
@@ -216,7 +232,9 @@ class Mesh:
 
     def settings(self) -> dict:
         return {"chanRegion": self.chan_region, "extraRegions": self.extra_regions, "notify": self.notify,
-                "ackTemplate": self.ack_template, "ackDefault": DEFAULT_ACK, "watch": self.watch}
+                "ackTemplate": self.ack_template, "ackDefault": DEFAULT_ACK, "watch": self.watch,
+                "push": {k: v for k, v in self.push_cfg.items() if k != "token"} | {"tokenSet": bool(self.push_cfg.get("token"))},
+                "autoReply": self.auto_reply}
 
     def set_ack_template(self, s: str):
         """Vorlage der Schnellantwort; leer = Standard."""
@@ -226,6 +244,166 @@ class Mesh:
         self.ack_template = s
         self.store.set("ackTemplate", s)
         self.emit("settings", settings=self.settings())
+
+    # ================= Schnellantwort-Vorlage =================
+    @staticmethod
+    def fill_template(m: dict, tpl: str, short=False) -> str:
+        """Platzhalter der Schnellantwort füllen (Zahlen mit Dezimalpunkt, die Antwort geht ins Netz).
+        short: langen Pfad auf Anfang und Ende kürzen. Unbekannte Platzhalter bleiben stehen."""
+        d1 = lambda v: f"{v:.1f}"
+        p, ts, rx = m.get("path"), m.get("ts"), m.get("rx")
+        lz = (rx - ts) / 1000 if ts and rx else None
+        pfad = "?" if p is None else "direct" if not p else ",".join(p[:2] + ["…"] + p[-2:]) if short and len(p) > 4 else ",".join(p)
+        hops = m.get("hops")
+        v = {"name": m.get("from") or "?", "snr": d1(m["snr"]) if m.get("snr") is not None else "?",
+             "hops": str(hops) if isinstance(hops, int) and not isinstance(hops, bool) else "?", "pfad": pfad,
+             "km": d1(m["km"]) if m.get("km") is not None else "?",
+             "abschnitte": str(m["segs"]) if m.get("segs") is not None else "?",
+             "ohne_pos": str(m["noloc"]) if m.get("noloc") is not None else "?",
+             "laufzeit": d1(lz) if lz is not None and 0 <= lz <= 600 else "?",
+             "region": "#" + m["region"] if m.get("region") and m["region"] != "-" else "no region",
+             "zeit": time.strftime("%H:%M", time.localtime((rx or ts or now_ms()) / 1000))}
+        v.update(time=v["zeit"], path=v["pfad"], segs=v["abschnitte"], noloc=v["ohne_pos"], latency=v["laufzeit"])
+        return re.sub(r"\{(\w+)\}", lambda x: v.get(x[1], x[0]), tpl or "")
+
+    def ack_for(self, conv: str, m: dict, tpl: str | None = None) -> str:
+        """Schnellantwort zu einer Nachricht; gekürzt, wenn sie sonst nicht passt."""
+        tpl = tpl or self.ack_template
+        text = self.fill_template(m, tpl)
+        if len(text.encode()) > self.max_len(conv):
+            text = self.fill_template(m, tpl, True)
+        if len(text.encode()) > self.max_len(conv):
+            raise MeshError("Schnellantwort zu lang – Vorlage unter Gerät › App kürzen")
+        return text
+
+    def ack_preview(self, tpl: str) -> dict:
+        t = now_ms()
+        sample = {"from": "Alice", "hops": 3, "path": ["e6c4", "0741", "78df"], "km": 48.2, "segs": 4, "noloc": 0,
+                  "snr": 5.25, "region": "saarland", "ts": t - 2400, "rx": t}
+        text = self.fill_template(sample, (tpl or "").strip() or DEFAULT_ACK)
+        return {"text": text, "bytes": len(text.encode())}
+
+    async def send_ack(self, conv: str, mid: str):
+        m = next((x for x in self.msgs.get(conv, []) if x["id"] == mid), None)
+        if not m:
+            raise MeshError("Nachricht nicht gefunden")
+        await self.send_msg(conv, self.ack_for(conv, m))
+
+    # ================= Auto-Antwort =================
+    def _notify_key(self, conv: str) -> str:
+        """Schlüssel für Einstellungen pro Unterhaltung: Kanäle über Name+Secret (überlebt Umsortieren)."""
+        return "chan:" + self._chan_id(self._chan(int(conv[3:]))) if conv.startswith("ch:") else conv
+
+    def set_auto_reply(self, key: str, on: bool, words, tpl: str, cooldown: float):
+        if not key.startswith("chan:"):
+            raise MeshError("Auto-Antwort gibt es nur für Kanäle")
+        if isinstance(words, str):
+            words = words.split(",")
+        words = list(dict.fromkeys(w.strip() for w in words if w.strip()))
+        if on and not words:
+            raise MeshError("Mindestens ein Auslösewort angeben")
+        if len(words) > 20 or any(len(w) > 40 for w in words):
+            raise MeshError("Zu viele oder zu lange Auslösewörter")
+        tpl = (tpl or "").strip()
+        if len(tpl.encode()) > MAX_TXT:
+            raise MeshError(f"Vorlage zu lang (max. {MAX_TXT} Byte)")
+        if not 30 <= cooldown <= 86400:
+            raise MeshError("Sperrzeit zwischen 30 Sekunden und 24 Stunden")
+        if not on and not words and not tpl:
+            self.auto_reply.pop(key, None)
+        else:
+            self.auto_reply[key] = {"on": bool(on), "words": words, "tpl": tpl, "cooldown": cooldown}
+        self.store.set("autoReply", self.auto_reply)
+        self.emit("settings", settings=self.settings())
+
+    def _auto_check(self, conv: str, m: dict):
+        """Auto-Antwort auf eine empfangene Kanalnachricht, wenn eine Regel greift. Schutz gegen Fluten:
+        nur aktuelle Nachrichten, nicht an andere adressierte, Sperrzeit je Absender, Mindestabstand je Kanal."""
+        key = self._notify_key(conv)
+        r = self.auto_reply.get(key)
+        me = (self.self or {}).get("name") or ""
+        if not r or not r.get("on") or not self.connected or not me or m.get("from") == me:
+            return
+        t = now_ms()
+        if abs(t - (m.get("ts") or 0)) > AUTO_MAX_AGE_S * 1000:
+            return
+        text = m.get("text") or ""
+        tagged = [x.lower() for x in re.findall(r"@\[([^\]]+)\]", text)]
+        if tagged and me.lower() not in tagged:
+            return
+        if not any(re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", text, re.I) for w in r["words"]):
+            return
+        who = (key, m.get("from"))
+        if t - self._auto_last.get(who, 0) < r["cooldown"] * 1000 or t - self._auto_last.get(key, 0) < AUTO_GAP_S * 1000:
+            return
+        self._auto_last[who] = self._auto_last[key] = t
+        self.spawn(self._auto_send(conv, m, r))
+
+    async def _auto_send(self, conv, m, r):
+        await asyncio.sleep(random.uniform(2, 5))  # nicht gleichzeitig mit anderen Antwortenden senden
+        try:
+            await self.send_msg(conv, self.ack_for(conv, m, r.get("tpl")), auto=True)
+            log.info("[+] Auto-Antwort an %s in %s", m.get("from"), self._conv_title(conv))
+        except MeshError as e:
+            log.warning("[!] Auto-Antwort fehlgeschlagen: %s", e)
+
+    # ================= Push =================
+    def set_push(self, cfg: dict):
+        typ = cfg.get("type") or ""
+        if typ not in push.TYPES:
+            raise MeshError("unbekannter Dienst")
+        url, chat = (cfg.get("url") or "").strip(), str(cfg.get("chat") or "").strip()
+        token = cfg.get("token")
+        token = self.push_cfg.get("token", "") if token is None else token.strip()  # None: unverändert
+        if typ in ("ntfy", "webhook") and not re.match(r"^https?://[^/\s]+", url):
+            raise MeshError("Adresse muss mit http:// oder https:// beginnen")
+        if typ == "ntfy" and not url.split("://", 1)[1].strip("/").count("/"):
+            raise MeshError("ntfy-Adresse mit Thema angeben, z. B. https://ntfy.sh/mein-thema")
+        if typ == "telegram" and not (token and chat):
+            raise MeshError("Bot-Token und Chat-ID angeben")
+        ev = {k: bool((cfg.get("events") or {}).get(k)) for k in ("dm", "mention", "watch", "chan")}
+        self.push_cfg = {"type": typ, "url": url, "chat": chat, "token": token, "events": ev}
+        self.store.set("push", self.push_cfg)
+        self.emit("settings", settings=self.settings())
+
+    def push(self, kind: str, title: str, text: str, **extra):
+        cfg = self.push_cfg
+        if not cfg.get("type") or not cfg["events"].get(kind):
+            return
+        t = time.monotonic()
+        self._push_times = [x for x in self._push_times if t - x < PUSH_WINDOW_S]
+        if len(self._push_times) >= PUSH_MAX:
+            return
+        self._push_times.append(t)
+
+        async def run():
+            try:
+                await asyncio.to_thread(push.send, dict(cfg), title, text, kind, extra)
+            except Exception as e:
+                log.warning("[!] Push fehlgeschlagen: %s", e)
+        self.spawn(run())
+
+    async def test_push(self):
+        if not self.push_cfg.get("type"):
+            raise MeshError("Kein Dienst eingestellt")
+        try:
+            await asyncio.to_thread(push.send, dict(self.push_cfg), "Meshboard", "Testnachricht – Push funktioniert ✓", "test")
+        except Exception as e:
+            raise MeshError(f"Push fehlgeschlagen: {e}")
+
+    def _on_new_msg(self, conv: str, m: dict):
+        """Neue empfangene Nachricht: Push und Auto-Antwort."""
+        if m["dir"] != "in" or m.get("cli") or conv.startswith("room:"):
+            return
+        mode = self.notify.get(self._notify_key(conv), "all")
+        me = ((self.self or {}).get("name") or "").lower()
+        mention = bool(me) and "@[" + me + "]" in (m.get("text") or "").lower()
+        if mode != "off":
+            kind = "dm" if conv.startswith("c:") else "mention" if mention else "chan" if mode == "all" else None
+            if kind:
+                self.push(kind, self._conv_title(conv), f"{m.get('from')}: {m.get('text')}", conv=conv, sender=m.get("from"))
+        if conv.startswith("ch:"):
+            self._auto_check(conv, m)
 
     def set_notify(self, key: str, mode: str):
         """Wann eine Unterhaltung benachrichtigt (ungelesen-Markierung, Desktop-Meldung): 'all', 'mention' oder 'off'."""
@@ -348,6 +526,7 @@ class Mesh:
         name = (self.nodes.get(key) or {}).get("name") or key[:8]
         log.info("[%s] %s %s", "!" if down else "+", name, "verstummt" if down else "wieder gehört")
         self.emit("watch_alert", key=key, name=name, down=down, last=last)
+        self.push("watch", "Meshboard", f"{name} {'nicht mehr gehört' if down else 'wieder gehört'}", key=key, down=down)
 
     # ================= Befehle =================
     def _mc(self) -> MeshCore:
@@ -1055,6 +1234,7 @@ class Mesh:
         del arr[:-MAX_MSGS]
         self._dirty_msgs[m["id"]] = (conv, m)
         self.emit("msg", conv=conv, m=m, new=True)
+        self._on_new_msg(conv, m)
 
     def update_msg(self, conv: str, m: dict):
         self._dirty_msgs[m["id"]] = (conv, m)
@@ -1065,16 +1245,20 @@ class Mesh:
             return MAX_TXT - len(((self.self or {}).get("name") or "").encode()) - 2
         return MAX_TXT
 
-    async def send_msg(self, conv: str, text: str):
+    async def send_msg(self, conv: str, text: str, auto=False):
         text = (text or "").strip()
         if not text or not conv:
             raise MeshError("Keine Nachricht")
+        if not conv.startswith(("ch:", "c:")):
+            raise MeshError("Gehörte Räume zum Schreiben erst abonnieren")
         if not self.connected:
             raise MeshError("nicht verbunden")
         if len(text.encode()) > self.max_len(conv):
             raise MeshError("Nachricht zu lang")
         ts = int(time.time())
         m = {"dir": "out", "from": self.self["name"], "text": text, "ts": ts * 1000, "rx": now_ms(), "status": "sending"}
+        if auto:
+            m["auto"] = True
         if conv.startswith("ch:"):
             self.add_msg(conv, m)
             await self.send_channel(conv, m)
@@ -1195,6 +1379,176 @@ class Mesh:
             raise MeshError("nicht verbunden")
         m["attempt"] = (m.get("attempt") or 0) + 1
         await (self.send_channel if conv.startswith("ch:") else self.send_direct)(conv, m)
+
+    # ================= Repeater verwalten & Trace =================
+    async def _remote(self, data: bytes, types: list, match, what: str, min_s=6.0):
+        """Anfrage ins Netz: Befehl unter self.lock senden (Antwort MSG_SENT), dann die Antwort aus dem Netz
+        ohne Lock abwarten – sonst blockiert ein langsamer Repeater alle anderen Befehle.
+        match(ev, sent) erkennt die passende Antwort; Ereignisse vor MSG_SENT werden gepuffert."""
+        mc = self._mc()
+        got, sent, wake = [], {}, asyncio.Event()
+
+        def on(ev):
+            got.append(ev)
+            wake.set()
+        subs = [mc.subscribe(t, on) for t in types]
+        try:
+            ev = await self._cmd(data, (EventType.MSG_SENT,))
+            sent.update(ev.payload)
+            end = time.monotonic() + max((sent.get("suggested_timeout") or 0) / 1000 * 1.5, min_s)
+            while True:
+                for e in got:
+                    if match(e, sent):
+                        return e
+                got.clear()
+                wake.clear()
+                left = end - time.monotonic()
+                if left <= 0:
+                    raise MeshError(f"{what}: keine Antwort")
+                try:
+                    await asyncio.wait_for(wake.wait(), left)
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            for s in subs:
+                s.unsubscribe()
+
+    def _remote_contact(self, key: str) -> dict:
+        key = (key or "").lower()
+        c = self.contacts.get(key)
+        if not c:
+            raise MeshError("Knoten ist kein Kontakt im Gerät – zuerst unter Kontakte hinzufügen")
+        return c
+
+    async def remote_login(self, key: str, pw: str | None = None, remember: bool | None = None) -> dict:
+        """Am Repeater/Room-Server anmelden. Ohne Passwort: gemerktes oder leeres (Gast)."""
+        c = self._remote_contact(key)
+        key = c["key"]
+        if pw is None:
+            pw = self.remote_pw.get(key, "")
+        ev = await self._remote(bytes([0x1A]) + bytes.fromhex(key) + pw.encode(),
+                                [EventType.LOGIN_SUCCESS, EventType.LOGIN_FAILED],
+                                lambda e, s: key.startswith(e.payload.get("pubkey_prefix") or "-"), "Anmeldung", 10)
+        if ev.type == EventType.LOGIN_FAILED:
+            self.logins.pop(key, None)
+            raise MeshError("Anmeldung abgelehnt – Passwort falsch?")
+        if remember is not None:
+            if remember and pw:
+                self.remote_pw[key] = pw
+            else:
+                self.remote_pw.pop(key, None)
+            self.store.set("remotePw", self.remote_pw)
+        info = {"admin": bool(ev.payload.get("is_admin")), "t": now_ms(), "remembered": key in self.remote_pw}
+        self.logins[key] = info
+        log.info("[+] Angemeldet an %s%s", c["name"], " (Admin)" if info["admin"] else "")
+        return info
+
+    async def _binary(self, key: str, rtype: int, data: bytes, what: str) -> bytes:
+        """Binäre Anfrage (Status, Nachbarn …); bei Zeitüberschreitung einmal neu anmelden und wiederholen."""
+        c = self._remote_contact(key)
+        req = bytes([0x32]) + bytes.fromhex(c["key"]) + bytes([rtype]) + data
+        match = lambda e, s: e.payload.get("tag") == bytes(s.get("expected_ack") or b"").hex()
+        for attempt in (0, 1):
+            try:
+                ev = await self._remote(req, [EventType.BINARY_RESPONSE], match, what, 8)
+                return bytes.fromhex(ev.payload["data"])
+            except MeshError:
+                if attempt or c["key"] not in self.remote_pw and c["key"] not in self.logins:
+                    raise
+                await self.remote_login(c["key"])  # Sitzung am Repeater abgelaufen?
+
+    async def remote_status(self, key: str) -> dict:
+        data = await self._binary(key, 0x01, b"", "Status")
+        if len(data) < 52:
+            raise MeshError("Status unvollständig")
+        s = parse_status(data, pubkey_prefix=key[:12])
+        names = {"bat": "batt", "tx_queue_len": "txQueue", "noise_floor": "noise", "last_rssi": "lastRssi",
+                 "last_snr": "lastSnr", "nb_recv": "recv", "nb_sent": "sent", "airtime": "airtime",
+                 "rx_airtime": "rxAirtime", "uptime": "uptime", "sent_flood": "sentFlood", "sent_direct": "sentDirect",
+                 "recv_flood": "recvFlood", "recv_direct": "recvDirect", "full_evts": "fullEvents",
+                 "direct_dups": "directDups", "flood_dups": "floodDups", "recv_errors": "recvErrors"}
+        return {v: s[k] for k, v in names.items() if k in s} | {"t": now_ms()}
+
+    async def remote_neighbours(self, key: str) -> list:
+        """Nachbarliste des Repeaters (seitenweise, 4-Byte-Präfixe); Namen über bekannte Knoten."""
+        out, offset, total = [], 0, None
+        while total is None or offset < total:
+            req = struct.pack("<BBHBBI", 0, 20, offset, 0, 4, random.randint(1, 0xFFFFFFFF))
+            data = await self._binary(key, 0x06, req, "Nachbarn")
+            total, n = struct.unpack_from("<hh", data)
+            o = 4
+            for _ in range(n):
+                pk = data[o:o + 4].hex()
+                secs, snr = struct.unpack_from("<ib", data, o + 4)
+                o += 9
+                nd = self._hop_cands(pk, False)
+                nd = nd[0] if len(nd) == 1 else None
+                out.append({"hash": pk, "key": nd and nd["key"], "name": nd and nd.get("name"), "type": nd and nd.get("type"),
+                            "secsAgo": secs, "snr": snr / 4,
+                            "km": round(hav(nd["lat"], nd["lon"], (self.nodes.get(key) or {}).get("lat", 0),
+                                            (self.nodes.get(key) or {}).get("lon", 0)), 1)
+                            if nd and has_pos(nd) and has_pos(self.nodes.get(key)) else None})
+            offset += n
+            if not n:
+                break
+        return sorted(out, key=lambda x: -x["snr"])
+
+    async def remote_cli(self, key: str, cmd: str):
+        """CLI-Befehl an Repeater/Room-Server; die Antwort kommt als Nachricht (cli) in die Unterhaltung."""
+        c = self._remote_contact(key)
+        cmd = (cmd or "").strip()
+        if not cmd or len(cmd.encode()) > MAX_TXT:
+            raise MeshError("Befehl fehlt oder ist zu lang")
+        ts = int(time.time())
+        conv = "c:" + c["key"][:12]
+        m = {"dir": "out", "from": (self.self or {}).get("name", ""), "text": cmd, "ts": ts * 1000, "rx": now_ms(),
+             "status": "sending", "cli": True}
+        self.add_msg(conv, m)
+        try:
+            await self._cmd(bytes([2, 1, 0]) + struct.pack("<I", ts) + bytes.fromhex(c["key"][:12]) + cmd.encode(),
+                            (EventType.MSG_SENT,))
+            m["status"] = "cli"
+        except MeshError as e:
+            m["status"], m["err"] = "fail", str(e)
+        self.update_msg(conv, m)
+
+    def remote_info(self, key: str) -> dict:
+        key = (key or "").lower()
+        return {"login": self.logins.get(key), "remembered": key in self.remote_pw, "trace": self.trace_path(key)}
+
+    def trace_path(self, key: str) -> str | None:
+        """Vorschlag für einen Trace hin und zurück (1-Byte-Hashes): bekannter Pfad → Ziel → Pfad rückwärts."""
+        key = (key or "").lower()
+        c, n = self.contacts.get(key), self.nodes.get(key) or {}
+        typ = (c or n).get("type")
+        hops = [h[:2] for h in c["hops"]] if c and not c["flood"] else None
+        if hops is None:
+            if any(key.startswith(h) for h in self.neighbors):
+                hops = []  # direkter Nachbar
+            else:
+                return None
+        if typ in FWD:
+            path = hops + [key[:2]] + hops[::-1]
+        elif hops:
+            path = hops + hops[-2::-1]  # Companion leitet nicht weiter: bis zum letzten Repeater und zurück
+        else:
+            return None
+        return ",".join(path)
+
+    async def trace(self, path: str) -> dict:
+        """Trace entlang eines Pfades (Hops mit Komma, 1 Byte); Antwort: SNR je Abschnitt."""
+        hs = [h.strip().lower() for h in (path or "").replace(" ", ",").split(",") if h.strip()]
+        if not hs or len(hs) > 32 or any(not re.fullmatch(r"[0-9a-f]{2}", h) for h in hs):
+            raise MeshError("Pfad als 1-Byte-Hashes mit Komma, z. B. 5c,7a,5c")
+        tag = random.randint(1, 0xFFFFFFFF)
+        t0 = time.monotonic()
+        ev = await self._remote(bytes([0x24]) + struct.pack("<IIB", tag, 0, 0) + bytes.fromhex("".join(hs)),
+                                [EventType.TRACE_DATA], lambda e, s: e.payload.get("tag") == tag, "Trace", 10)
+        nodes = ev.payload.get("path") or []
+        res = self.resolve_path(hs, None, self.self)
+        hops = [{"hash": h, "name": r["name"], "guess": r["guess"], "snr": nd.get("snr")} for h, r, nd in zip(hs, res, nodes)]
+        final = nodes[-1].get("snr") if len(nodes) > len(hs) else None
+        return {"path": hs, "hops": hops, "final": final, "ms": round((time.monotonic() - t0) * 1000)}
 
     # ================= Live-Traffic =================
     def _on_rx_log(self, ev):

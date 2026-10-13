@@ -288,3 +288,63 @@ def test_packet_link(app):
     assert app.json("GET", f"/api/packets/{p['id']}")[1]["raw"] == p["raw"]
     assert app.json("GET", "/api/packets/999999999")[0] == 400
     assert app.call("GET", "/api/packets/export?fmt=json")[0] == 200  # feste Pfade gehen weiter vor
+
+
+def test_remote_admin_and_trace(app):
+    rep = "ab" + "22" * 31
+    st, body = app.json("POST", "/api/remote/login", {"key": rep, "password": "falsch"})
+    assert st == 400 and "abgelehnt" in body["detail"]
+    st, body = app.json("POST", "/api/remote/login", {"key": rep, "password": "Rep#Pw42", "remember": True})
+    assert st == 200 and body["admin"] and body["remembered"]
+    assert app.json("GET", f"/api/remote?key={rep}")[1]["remembered"]
+    assert "Rep#Pw42" not in json.dumps(app.state())  # Passwörter gehen nie an den Browser
+    s = app.json("POST", "/api/remote/status", {"key": rep})[1]
+    assert (s["batt"], s["noise"], s["uptime"], s["lastSnr"], s["recvErrors"]) == (4105, -112, 86400, 6.5, 2)
+    nb = app.json("POST", "/api/remote/neighbours", {"key": rep})[1]
+    assert [(n["name"], n["snr"], n["secsAgo"]) for n in nb] == [(None, 7.0, 60), ("Bob", -2.5, 600)]
+    assert app.json("POST", "/api/remote/cli", {"key": rep, "cmd": "ver"})[0] == 200
+    conv = "c:" + rep[:12]
+    app.wait(lambda s: any(m["dir"] == "in" and m.get("cli") and m["text"] == "> ver ok" for m in s["msgs"].get(conv, [])))
+    assert app.json("POST", "/api/remote/status", {"key": "00" * 32})[0] == 400  # kein Kontakt
+    tr = app.json("POST", "/api/trace", {"value": "ab,5c,ab"})[1]
+    assert [h["snr"] for h in tr["hops"]] == [6.0, 5.0, 4.0] and tr["final"] == 7.0 and tr["hops"][0]["name"] == "Rep-Saar"
+    assert app.json("POST", "/api/trace", {"value": "xyz"})[0] == 400
+
+
+def test_push_webhook_and_ntfy(app):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    got = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            got.append((self.path, self.headers.get("Authorization"), json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        ev = {"dm": True, "mention": True, "watch": True, "chan": False}
+        assert app.json("PUT", "/api/settings/push", {"type": "webhook", "url": url + "/hook", "token": "t0k", "events": ev})[0] == 200
+        assert app.json("POST", "/api/push/test")[0] == 200
+        assert got[-1][0] == "/hook" and got[-1][1] == "Bearer t0k" and got[-1][2]["kind"] == "test"
+        assert app.state()["settings"]["push"]["tokenSet"] and "t0k" not in json.dumps(app.state())
+        assert app.json("PUT", "/api/settings/push", {"type": "ntfy", "url": url + "/mein-thema", "token": "", "events": ev})[0] == 200
+        assert app.json("POST", "/api/push/test")[0] == 200
+        assert got[-1][0] == "/" and got[-1][1] is None and got[-1][2]["topic"] == "mein-thema" and "✓" in got[-1][2]["message"]
+    finally:
+        app.json("PUT", "/api/settings/push", {"type": ""})
+        srv.shutdown()
+    status, body = app.json("POST", "/api/push/test")
+    assert status == 400 and body["detail"] == "Kein Dienst eingestellt"
+
+
+def test_ack_preview_and_send(app):
+    p = app.json("POST", "/api/settings/ack-preview", {"value": "@[{name}] {hops} hops"})[1]
+    assert p == {"text": "@[Alice] 3 hops", "bytes": 15}
+    assert app.json("POST", "/api/messages/ack", {"conv": "ch:0", "id": "gibtsnicht"})[1]["detail"] == "Nachricht nicht gefunden"
+    assert app.json("POST", "/api/messages/send", {"conv": "room:technik", "text": "x"})[0] == 400

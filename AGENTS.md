@@ -15,12 +15,13 @@ Sprache: UI-Texte, Fehlermeldungen, Kommentare, Commit-Messages und README auf *
 | `backend/mesh.py` | Klasse `Mesh`: Verbindung über die Bibliothek `meshcore`, gesamter Zustand (Kontakte, Knoten, Kanäle, Pakete, Nachrichten, Nachbarn, Statistik), Chat-Logik (ACKs, Region pro Kanal), Auto-Reconnect, Protokoll-Log |
 | `backend/packets.py` | Funkpakete aus dem RX-Log zerlegen (`parse_packet`), Region per HMAC-Transport-Code erkennen |
 | `backend/discovery.py` | Hashtag-Räume: `RoomIndex` (Kanal-Hash → Kandidaten, MAC-Prüfung), `decrypt` (AES-128-ECB), `guess_region` (Regions-Code gegen Namensliste) |
+| `backend/push.py` | Push-Benachrichtigungen (ntfy, Telegram, Webhook) mit `urllib`, läuft per `asyncio.to_thread` |
 | `backend/candidates.py` | Namenslisten für Regionen und Räume (klein, ohne `#`) |
 | `backend/store.py` | SQLite (stdlib `sqlite3`): Knoten, Nachrichten (pro Gerät, max. 500 pro Unterhaltung), Einstellungen, Paketverlauf (`packets`, Aufbewahrung `PACKET_DAYS`) samt Statistik-Abfragen (`packet_stats`) |
 | `backend/api.py` | FastAPI: REST unter `/api/…`, WebSocket `/api/ws`, statische Auslieferung von `frontend/` |
 | `backend/__main__.py` | Start mit `python -m backend [node]`, Konfiguration über CLI und Umgebungsvariablen |
 | `frontend/index.html`, `css/app.css` | Oberfläche |
-| `frontend/js/` | ES-Module ohne Build: `main.js` (Events→Zustand, Verdrahtung), `state.js` (Client-Zustand `S`, Render-Steuerung, `actions`), `api.js` (REST/WebSocket), `util.js`, je ein Modul pro Tab (`live`, `stats`, `chat`, `map`, `contacts`, `device`), `search.js` (globale Suche) |
+| `frontend/js/` | ES-Module ohne Build: `main.js` (Events→Zustand, Verdrahtung), `state.js` (Client-Zustand `S`, Render-Steuerung, `actions`), `api.js` (REST/WebSocket), `util.js`, je ein Modul pro Tab (`live`, `stats`, `chat`, `map`, `contacts`, `device`), `search.js` (globale Suche), `remote.js` (Repeater verwalten, Trace) |
 | `tests/` | pytest: `test_packets.py` (Unit), `test_e2e.py` (Server gegen Simulator), `fake_companion.py` (simulierter TCP-Companion) |
 
 ## Architektur und Datenfluss
@@ -33,6 +34,7 @@ Sprache: UI-Texte, Fehlermeldungen, Kommentare, Commit-Messages und README auf *
 - **Event-Handler der Bibliothek** (`Mesh._subscribe`) sind bewusst **synchron**. Nur so bleibt die Reihenfolge erhalten (Funkpaket vor der zugehörigen Nachricht, nötig für die Region-Zuordnung in `_find_rx_packet`). Wer aus einem Handler einen Gerätebefehl braucht, startet ihn mit `self.spawn(...)`. Ein `await` im Handler ist verboten.
 - **Regionen und Räume** lassen sich nicht zurückrechnen, nur gegen Namen prüfen. Der Regions-Code ist ein HMAC über den Paketinhalt und darum bei jedem Paket anders. Statistiken deshalb pro Region, nicht pro Code. Gehörte Räume (nicht auf dem Gerät) laufen als Unterhaltung `room:<name>`. Beim Abonnieren bzw. wenn der Kanal auf dem Gerät auftaucht, verschiebt `Mesh._merge_room` den Verlauf nach `ch:<idx>`.
 - Die Protokoll-Konstanten stammen aus MeshCore `examples/companion_radio`. Was die Bibliothek nicht passend anbietet, wird roh gesendet (Scope/Region, Hash-Modus, Nachrichten senden, `SET_OTHER`). Das Format muss zum bisherigen Verhalten passen: Regionsname ohne `#` und Schlüssel `sha256('#'+name)[:16]`.
+- **Anfragen ins Netz** (Login, Status, Nachbarn, Trace) laufen über `Mesh._remote`: Befehl unter `self.lock` senden, Antwort ohne Lock abwarten, damit ein langsamer Repeater keine anderen Befehle blockiert. Passwörter und Push-Token nie an den Browser schicken.
 - **Hop-Hashes** ordnet `Mesh.resolve_path` Knoten zu (Repeater bevorzugt, bei Mehrdeutigkeit kürzester plausibler Weg). Pakete tragen das Ergebnis als `res` (`[Schlüssel|null, Kandidaten]` je Hop), im Frontend über `hopInfo(p, i)`. Keine eigene Auflösung per Hash im Frontend bauen.
 - Buttons in generiertem HTML nutzen `data-act="name"` plus `data-…`-Attribute. Die Funktion liegt in `actions` (`state.js`), ein globaler Klick-Handler ruft sie auf. Keine Inline-`onclick`, denn ES-Module haben keine globalen Funktionen.
 

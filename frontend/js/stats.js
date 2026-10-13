@@ -281,7 +281,7 @@ async function nodeDetail(d){
     ['Entfernung',st.km!=null?fmtKm(st.km):hasPos(n)?'eigene Position unbekannt':'keine Position'],
     ['Zuerst gehört',st.firstSeen?new Date(st.firstSeen).toLocaleString('de-DE'):'–'],['Zuletzt gehört',st.lastSeen?ago(st.lastSeen)+' ('+new Date(st.lastSeen).toLocaleString('de-DE')+')':'–'],
     ['Im Gerät gespeichert',st.contact?'ja':'nein']].map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('');
-  const btns=(st.key&&S.nodes.has(st.key)?watchBtn(st.key)+' ':'')+(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'');
+  const btns=(st.key&&S.nodes.has(st.key)?watchBtn(st.key)+' ':'')+(st.key?`<button class="sm" data-act="remote" data-key="${st.key}">${n.type===2||n.type===3?'🛠 Verwalten / Trace':'📡 Trace'}</button> `:'')+(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'');
   body.innerHTML=`<div class="drawer-h"><h3>${esc(title)}</h3><button class="sm" data-act="closeDetailNode" title="Schließen (Esc)">✕</button></div>
     ${btns?`<div class="frm">${btns}</div>`:''}
     <div class="kv">${kv}</div>
