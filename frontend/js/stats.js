@@ -1,5 +1,5 @@
 // Statistik aus dem gespeicherten Verlauf (Server: GET /api/stats), gegliedert in Unterseiten
-import {$,$$,esc,ago,snrCls,store,hasPos,NTYPE,toast} from './util.js';
+import {$,$$,esc,ago,snrCls,store,hasPos,NTYPE,toast,extLink,extHost} from './util.js';
 import {S,onShow,onRender,ui,actions} from './state.js';
 import {api,run} from './api.js';
 import {baseLayers,defaultBase} from './basemaps.js';
@@ -271,8 +271,10 @@ let detailReq=0;
 async function nodeDetail(d){
   const req=++detailReq,box=$('#nodeDrawer'),body=$('#nodeDrawerBody');
   box.classList.add('show');body.innerHTML='<p class="muted">Lade Details…</p>';
-  let st;try{st=await api(`stats/node?key=${d.key||''}&hash=${d.hash||''}&hours=${$('#stRange').value}`,undefined,'GET')}
-  catch(e){body.innerHTML=`<p class="muted">${esc(e.message)}</p>`;return}
+  let st;try{st=await api(`stats/node?key=${d.key||''}&hash=${d.hash||''}&name=${encodeURIComponent(d.name||'')}&ext=${d.ext?1:0}&hours=${$('#stRange').value}`,undefined,'GET')}
+  catch(e){if(req!==detailReq)return;const lk=S.settings.lookup||{};  // unbekannter Name: einmalig auf CoreScope suchen (auch wenn Nachschlagen aus ist)
+    body.innerHTML=`<div class="drawer-h"><h3>${esc(d.name||'Knoten')}</h3><button class="sm" data-act="closeDetailNode" title="Schließen (Esc)">✕</button></div><p class="muted">${esc(e.message)}</p>`+
+      (d.name&&!d.ext&&!lk.on&&lk.url?`<button class="sm" data-act="nodeDetail" data-name="${esc(d.name)}" data-ext="1">🔎 Auf ${esc(extHost(lk.url))} suchen</button>`:'');return}
   if(req!==detailReq)return;
   const n=st.node||{},size=st.bucketMs,lbl=t=>xLabel(t,size),days=Math.max(1/24,st.hours/24);
   const when=t=>new Date(t).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -280,8 +282,9 @@ async function nodeDetail(d){
   const kv=[['Typ',ntype(n.type)],['Schlüssel',st.key?`<span class="mono" style="word-break:break-all">${st.key}</span>`:`nur Hop-Hash <span class="mono">${st.hash}</span>${st.names?' · möglich: '+esc(st.names):''}`],
     ['Entfernung',st.km!=null?fmtKm(st.km):hasPos(n)?'eigene Position unbekannt':'keine Position'],
     ['Zuerst gehört',st.firstSeen?new Date(st.firstSeen).toLocaleString('de-DE'):'–'],['Zuletzt gehört',st.lastSeen?ago(st.lastSeen)+' ('+new Date(st.lastSeen).toLocaleString('de-DE')+')':'–'],
-    ['Im Gerät gespeichert',st.contact?'ja':'nein']].map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('');
-  const btns=(st.key&&S.nodes.has(st.key)?watchBtn(st.key)+' ':'')+(st.key?`<button class="sm" data-act="remote" data-key="${st.key}">${n.type===2||n.type===3?'🛠 Verwalten / Trace':'📡 Trace'}</button> `:'')+(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'');
+    ['Im Gerät gespeichert',st.contact?'ja':'nein'],
+    ...(n.ext?[['Quelle',`nicht selbst gehört, gefunden auf ${extLink(n.ext,st.key)}${n.extSeen?' · dort zuletzt vor '+ago(n.extSeen):''}`]]:st.key&&S.settings.lookup?.on?[['CoreScope',extLink(S.settings.lookup.url,st.key)]]:[])].map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('');
+  const btns=(st.key&&S.nodes.has(st.key)?watchBtn(st.key)+' ':'')+(st.key?`<button class="sm" data-act="remote" data-key="${st.key}">${n.type===2||n.type===3?'🛠 Verwalten / Trace':'📡 Trace'}</button> `:'')+(hasPos(n)?`<button class="sm" data-act="zoomTo" data-key="${st.key}">🗺 Karte</button> `:'')+(st.contact&&(st.contact.type===1||st.contact.type===3)?`<button class="sm" data-act="openChat" data-key="${st.key}">💬 Chat</button>`:'')+(st.key&&!st.contact&&n.type>=1&&n.type<=4?`<button class="sm" data-act="addContact" data-key="${st.key}"${S.connected?'':' disabled'}>＋ Im Gerät speichern</button>`:'');
   body.innerHTML=`<div class="drawer-h"><h3>${esc(title)}</h3><button class="sm" data-act="closeDetailNode" title="Schließen (Esc)">✕</button></div>
     ${btns?`<div class="frm">${btns}</div>`:''}
     <div class="kv">${kv}</div>

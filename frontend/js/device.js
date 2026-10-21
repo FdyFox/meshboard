@@ -34,6 +34,7 @@ export function renderDevice(){
   if(document.activeElement!==$('#extraRegions'))$('#extraRegions').value=S.settings.extraRegions||'';
   if(document.activeElement!==$('#setAck'))$('#setAck').value=S.settings.ackTemplate||'';
   ackPreview();pushForm();
+  const lk=S.settings.lookup||{};$('#lkOn').checked=!!lk.on;if(document.activeElement!==$('#lkUrl'))$('#lkUrl').value=lk.url||'';
   $('#logOn').checked=S.logOn;
   renderNet();renderLog();
 }
@@ -129,6 +130,8 @@ export function initDevice(){
   $('#btnResetAck').onclick=()=>{$('#setAck').value=S.settings.ackDefault||'';ackPreview()};
   $('#pushType').onchange=()=>{pushForm(true);if(!$('#pushType').value&&S.settings.push?.type)pushSave()};
   $('#btnPushSave').onclick=()=>pushSave();$('#btnPushClrTok').onclick=()=>pushSave(true);
+  const lkSave=async()=>{if(!await run('settings/lookup',{on:$('#lkOn').checked,url:$('#lkUrl').value},'Gespeichert','PUT'))renderDevice()};
+  $('#lkOn').onchange=lkSave;$('#btnLkSave').onclick=lkSave;
   $('#btnPushTest').onclick=()=>run('push/test',undefined,'Testnachricht gesendet');
   $('#setAck').oninput=ackPreview;
   $('#setAck').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#btnSetAck').click()}});  // einzeilig: Enter speichert

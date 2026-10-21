@@ -82,7 +82,7 @@ function renderConv(){
   const arr=S.msgs[conv]||[];
   const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<60;
   box.innerHTML=arr.length?arr.map(m=>{
-    const meta=m.dir==='in'?`<span class="from">${esc(m.from)}</span> · ${dtfmt(m.ts||m.rx)}${m.snr!=null?` · <span class="${snrCls(m.snr)}">SNR ${m.snr.toFixed(1)}</span>`:''}${m.hops!=null?' · '+(m.hops==='direkt'?'direkt':m.hops+' Hops'):''}${m.hashBytes?` · <span class="hash" title="Pfad-Hash-Größe">${m.hashBytes}B</span>`:''}${m.region?(m.region==='-'?' · <span class="hash" title="Region">ohne Region</span>':` · <span class="hash known" title="Region">#${esc(m.region)}</span>`):m.regionCode?` · <span class="hash" title="Unbekannte Region – Namen unter Gerät › Region & Routing eintragen">Region ?${m.regionCode}</span>`:''}${replyBtns(conv,m)}`:dtfmt(m.rx);
+    const meta=m.dir==='in'?`<a href="#" class="from" data-act="nodeDetail" data-name="${esc(m.from)}" title="Infos zu ${esc(m.from)}">${esc(m.from)}</a> · ${dtfmt(m.ts||m.rx)}${m.snr!=null?` · <span class="${snrCls(m.snr)}">SNR ${m.snr.toFixed(1)}</span>`:''}${m.hops!=null?' · '+(m.hops==='direkt'?'direkt':m.hops+' Hops'):''}${m.hashBytes?` · <span class="hash" title="Pfad-Hash-Größe">${m.hashBytes}B</span>`:''}${m.region?(m.region==='-'?' · <span class="hash" title="Region">ohne Region</span>':` · <span class="hash known" title="Region">#${esc(m.region)}</span>`):m.regionCode?` · <span class="hash" title="Unbekannte Region – Namen unter Gerät › Region & Routing eintragen">Region ?${m.regionCode}</span>`:''}${replyBtns(conv,m)}`:dtfmt(m.rx);
     let st='',cls='';if(m.dir==='out'){const ch=conv.startsWith('ch:'),rg=ch&&m.region?(m.region==='-'?' (ohne Region)':' (#'+esc(m.region)+')'):'';
       st={sending:'⏳ sende…',sent:ch?'✓ gesendet'+rg:'↗ '+(m.flood?'Flood':'Direkt')+', warte auf ACK…',ok:'✓✓ zugestellt'+(m.rtt?' ('+(m.rtt/1000).toFixed(1)+' s)':''),noack:ch?'kein Repeater gehört':'⚠ keine Bestätigung',fail:'✗ Fehler: '+esc(m.err||'')}[m.status]||'';
       if(m.auto)st='<span title="Automatische Antwort">🤖</span> '+st;
@@ -106,11 +106,17 @@ function autoForm(conv,r={}){r=r||{};const cd=r.cooldown||300;
     <label>Sperrzeit je Absender <select id="arCd">${[[60,'1 min'],[300,'5 min'],[900,'15 min'],[3600,'1 h'],[21600,'6 h']].map(([v,l])=>`<option value="${v}"${v==cd?' selected':''}>${l}</option>`).join('')}</select></label>
     <span><button class="sm" data-act="autoSave">Speichern</button> <button class="sm" data-act="autoBox">Schließen</button></span>
     <p class="muted small">Antwortet der Server, auch ohne offenen Browser: nur auf ganze Wörter, nicht auf Nachrichten an andere (@[Name]), nicht auf ältere als 10 Minuten, höchstens eine Antwort alle 10 s pro Kanal. Platzhalter wie bei der Schnellantwort.</p></div>`}
+const dmContact=name=>[...S.contacts.values()].find(c=>c.name===name&&c.saved&&(c.type===1||c.type===3));
+// Privat antworten: gespeicherten Kontakt öffnen, sonst sucht der Server den Absender (gehört oder CoreScope) und speichert ihn
+async function dmTo(name,b){let key=dmContact(name)?.key;
+  if(!key){b.disabled=true;const r=await run('contacts/dm',{value:name});b.disabled=false;if(!r)return;key=r.key;if(r.added)toast(name+' als Kontakt gespeichert','ok')}
+  actions.openChat({key});setTimeout(()=>$('#msgIn').focus(),50)}
 function replyBtns(conv,m){
   if(m.dir!=='in'||conv.startsWith('room:'))return '';
   let h=` <button class="sm rbtn" title="Antworten (@${esc(m.from)})" data-reply="${esc(m.from)}">↩</button>`;
   h+=` <button class="sm rbtn" title="Schnellantwort senden (Vorlage unter Gerät › App)" data-ack="${m.id}"${S.connected?'':' disabled'}>✓</button>`;
-  if(conv.startsWith('ch:')){const c=[...S.contacts.values()].find(c=>c.name===m.from&&(c.type===1||c.type===3));if(c)h+=` <button class="sm rbtn" title="Direktnachricht an ${esc(m.from)}" data-dm="${c.key}">✉</button>`}
+  if(conv.startsWith('ch:')&&m.from!==S.self?.name){const c=dmContact(m.from);
+    h+=` <button class="sm rbtn" title="Privat antworten an ${esc(m.from)}${c?'':' – wird dazu als Kontakt im Gerät gespeichert'}" data-dm="${esc(m.from)}"${c||S.connected?'':' disabled'}>✉</button>`}
   return h;
 }
 export function updateCompose(){const room=!!S.active?.startsWith('room:'),on=S.connected&&!!S.active&&!room;$('#msgIn').disabled=!on;$('#btnSend').disabled=!on;
@@ -124,7 +130,7 @@ export function initChat(){
   $('#msgs').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
     if(b.dataset.ack){b.disabled=true;run('messages/ack',{conv:S.active,id:b.dataset.ack}).finally(()=>{b.disabled=false})}  // Vorlage füllt der Server
     else if(b.dataset.reply!=null){const inp=$('#msgIn');const tag=S.active.startsWith('ch:')?'@['+b.dataset.reply+'] ':'';if(tag&&!inp.value.startsWith(tag))inp.value=tag+inp.value.replace(/^@\[[^\]]*\]\s*/,'');inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);updateLen()}
-    else if(b.dataset.dm){actions.openChat({key:b.dataset.dm});setTimeout(()=>$('#msgIn').focus(),50)}});
+    else if(b.dataset.dm!=null)dmTo(b.dataset.dm,b)});
   $('#msgIn').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});$('#msgIn').oninput=updateLen;$('#btnSend').onclick=sendMsg;
   $('#setNotify').checked=store.get('mcw.notify',false);
   $('#setNotify').onchange=async e=>{if(e.target.checked&&'Notification' in window&&Notification.permission!=='granted'){const p=await Notification.requestPermission();if(p!=='granted')e.target.checked=false}store.set('mcw.notify',e.target.checked)};

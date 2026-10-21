@@ -57,6 +57,11 @@ class Push(BaseModel):
     events: dict = {}
 
 
+class Lookup(BaseModel):
+    on: bool = False
+    url: str = ""
+
+
 class AutoReply(BaseModel):
     on: bool = False
     words: list[str] | str = []
@@ -205,6 +210,10 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         await m.load_contacts()
         return {"count": len(m.contacts)}
 
+    @app.post("/api/contacts/dm")
+    async def dm_contact(request: Request, b: Text):
+        return await M(request).dm_contact(b.value)
+
     @app.post("/api/contacts/{key}/{action}")
     async def contact_action(request: Request, key: str, action: str):
         m = M(request)
@@ -302,6 +311,21 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         await M(request).test_push()
         return ok
 
+    @app.put("/api/settings/lookup")
+    async def set_lookup(request: Request, b: Lookup):
+        M(request).set_lookup(b.on, b.url)
+        return ok
+
+    @app.get("/api/lookup")
+    async def lookup(request: Request, q: str):
+        mesh = M(request)
+        if not mesh.lookup_cfg["on"]:
+            raise MeshError("Suche auf CoreScope ist aus (Gerät › Einstellungen)")
+        q = q.strip()
+        if len(q) < 2:
+            return []
+        return await mesh.lookup(q)
+
     @app.put("/api/settings/extra-regions")
     async def extra_regions(request: Request, b: Text):
         M(request).set_extra_regions(b.value)
@@ -333,7 +357,13 @@ def create_app(target: dict | None, data_dir: Path, packet_days: int = 365) -> F
         return M(request).packet_stats(hours)
 
     @app.get("/api/stats/node")
-    async def node_stats(request: Request, key: str = "", hash: str = "", hours: float = 24):
+    async def node_stats(request: Request, key: str = "", hash: str = "", name: str = "", ext: bool = False, hours: float = 24):
+        if name and not key and not hash:  # Klick auf einen Absendernamen im Chat; ext: auch auf CoreScope suchen
+            n = await M(request).node_by_name(name, ext=ext)
+            if not n:
+                raise M(request).unknown_name(name, ext)
+            key = n["key"]
+        await M(request).ensure_node(key, hash)
         return M(request).node_stats(key, hash, hours)
 
     @app.get("/api/packets/export")

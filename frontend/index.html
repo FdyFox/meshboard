@@ -192,6 +192,10 @@
             <div class="frm small" id="pushEvents"><label><input type="checkbox" data-k="dm"> Direktnachrichten</label><label><input type="checkbox" data-k="mention"> Erwähnungen</label><label><input type="checkbox" data-k="chan"> Kanäle (Benachrichtigung „Alle“)</label><label><input type="checkbox" data-k="watch"> Beobachtete Knoten</label></div>
             <div class="frm"><button id="btnPushSave">Speichern</button><button id="btnPushTest">Test senden</button></div>
             <p class="muted small" id="pushHelp" style="margin:0"></p>
+            <h4 class="muted small" style="margin:12px 0 4px">Unbekannte Knoten nachschlagen</h4>
+            <label class="frm"><input type="checkbox" id="lkOn"> Auf CoreScope suchen (Hop-Hashes im Hintergrund, globale Suche)</label>
+            <div class="frm"><input id="lkUrl" placeholder="https://live.saarmesh.de" style="flex:1;min-width:0"><button class="sm" id="btnLkSave">Speichern</button></div>
+            <p class="muted small" style="margin:0">Hashes und Suchbegriffe gehen dabei an diesen Server. Gefundene Knoten sind mit ihrer Quelle markiert und werden durch eigene Adverts ersetzt.</p>
             <h4 class="muted small" style="margin:12px 0 4px">Daten auf dem Server</h4>
             <div class="frm"><button id="btnWipe" class="danger">Gespeicherte Daten löschen</button></div>
             <p class="muted small" style="margin:0">Löscht gespeicherte Knoten, Chatverläufe, gehörte Räume, Paketverlauf und Gerätewerte. Auf dem Gerät wird nichts gelöscht.</p>

@@ -74,7 +74,7 @@ canvas#spark{height:34px;width:240px}
 .msg{max-width:72%;padding:7px 11px;border-radius:10px;background:var(--panel2);border:1px solid var(--border);align-self:flex-start}
 .msg.out{align-self:flex-end;background:color-mix(in srgb,var(--accent2) 22%,var(--panel))}
 .msg .meta{font-size:11px;color:var(--muted);margin-bottom:2px}
-.msg .from{font-weight:600;color:var(--accent2)}
+.msg .from{font-weight:600;color:var(--accent2);text-decoration:none}.msg a.from:hover{text-decoration:underline}
 .msg .txt{white-space:pre-wrap;word-wrap:break-word}
 .msg .st{font-size:11px;color:var(--muted);margin-top:3px;text-align:right}
 .rbtn{padding:0 6px;font-size:11px;line-height:16px;margin-left:4px;opacity:.6}.msg:hover .rbtn{opacity:1}

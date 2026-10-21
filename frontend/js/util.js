@@ -23,6 +23,9 @@ export function linkify(s){
     return `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(tail)}`;
   }).join('');
 }
+// Knoten von CoreScope (n.ext = Adresse der Quelle): Hostname und Link zur Knotenseite
+export const extHost=u=>{try{return new URL(u).host}catch{return String(u)}};
+export const extLink=(u,key)=>`<a href="${esc(u)}/#/nodes/${esc(key)}" target="_blank" rel="noopener noreferrer">${esc(extHost(u))}</a>`;
 export const chTitle=n=>String(n).startsWith('#')?n:'#'+n;
 export const hexSpaced=h=>(h.match(/.{1,2}/g)||[]).join(' ');
 // Browser-lokale Einstellungen (Kartenstil, Benachrichtigungen) – Daten liegen auf dem Server

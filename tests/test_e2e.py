@@ -361,3 +361,87 @@ def test_add_heard_node_as_contact(app):
     assert (c["name"], c["type"], c["saved"], c["flood"]) == ("Rep-Saar", 2, True, True)
     status, body = app.json("POST", f"/api/contacts/{'ee' * 32}/add")
     assert status == 400 and "unbekannt" in body["detail"]
+
+
+def test_corescope_lookup(app):
+    """Unbekannte Hops im Hintergrund und globale Suche über eine (simulierte) CoreScope-Instanz."""
+    import threading
+    import urllib.parse
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    far, other = "5c" + "33" * 31, "dd" + "44" * 31
+    nodes = [{"public_key": far, "name": "Fern-Rep", "role": "repeater", "lat": 49.3, "lon": 7.1, "last_seen": "2026-10-20T20:29:34Z"},
+             {"public_key": other, "name": "Fremd", "role": "companion", "lat": None, "lon": None, "last_seen": None},
+             {"public_key": "a1" + "55" * 31, "name": "Alice", "role": "companion", "lat": 49.4, "lon": 7.0, "last_seen": "2026-10-20T20:00:00Z"},
+             {"public_key": "0e" + "66" * 31, "name": "D-NW-Olpe", "role": "repeater", "lat": 51.0, "lon": 7.9, "last_seen": None}]
+    asked = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            u = urllib.parse.urlsplit(self.path)
+            q = urllib.parse.parse_qs(u.query).get("q", [""])[0].lower()
+            asked.append(q)
+            body = json.dumps({"nodes": [n for n in nodes if n["public_key"].startswith(q) or q in n["name"].lower()]}).encode()
+            self.send_response(200 if u.path == "/api/nodes/search" else 404)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        assert app.json("GET", "/api/lookup?q=Fremd")[1]["detail"].startswith("Suche auf CoreScope ist aus")
+        assert app.json("PUT", "/api/settings/lookup", {"on": True, "url": "ftp://x"})[0] == 400
+        assert app.json("PUT", "/api/settings/lookup", {"on": True, "url": url + "/"})[0] == 200
+        assert app.state()["settings"]["lookup"] == {"on": True, "url": url}
+        # Suche: Treffer kommen zurück, werden aber nicht übernommen
+        hits = app.json("GET", "/api/lookup?q=Fremd")[1]
+        assert [(h["key"], h["name"], h["type"], h["ext"]) for h in hits] == [(other, "Fremd", 1, url)]
+        assert all(n["key"] != other for n in app.state()["nodes"])
+        # Hintergrund: Echos laufen über die unbekannten Hops 5c und 7a
+        assert app.json("POST", "/api/messages/send", {"conv": "ch:0", "text": "lookup"})[0] == 200
+        s = app.wait(lambda s: any(n["key"] == far for n in s["nodes"]))
+        n = next(n for n in s["nodes"] if n["key"] == far)
+        assert (n["name"], n["type"], n["lat"], n["ext"]) == ("Fern-Rep", 2, 49.3, url) and n["extSeen"] > 0
+        app.wait(lambda s: "7a" in asked)
+        # neue Pakete über 5c werden jetzt zugeordnet; bereits nachgeschlagene Hashes nicht erneut
+        assert app.json("POST", "/api/messages/send", {"conv": "ch:0", "text": "lookup 2"})[0] == 200
+        s = app.wait(lambda s: any(p.get("res") == [[far, 1]] for p in s["packets"][-3:]))
+        time.sleep(2.5)
+        assert asked.count("5c") == 1 and asked.count("7a") == 1
+        # Details zu einem Schlüssel, den nur CoreScope kennt: wird übernommen und lässt sich speichern
+        st = app.json("GET", f"/api/stats/node?key={other}")[1]
+        assert st["node"]["name"] == "Fremd" and st["node"]["ext"] == url
+        assert app.call("POST", f"/api/contacts/{other}/add")[0] == 200
+        c = next(c for c in app.state()["contacts"] if c["key"] == other)
+        assert (c["name"], c["type"], c["saved"]) == ("Fremd", 1, True)
+        assert "ext" not in next(n for n in app.state()["nodes"] if n["key"] == other)
+        # Privat antworten auf „Alice“ (Kanal ch:0, sonst unbekannt): Treffer von CoreScope wird Kontakt
+        assert app.json("POST", "/api/contacts/dm", {"value": "Alice"})[1] == {"key": "a1" + "55" * 31, "added": True}
+        assert any(c["name"] == "Alice" and c["saved"] for c in app.state()["contacts"])
+        # Nachschlagen aus: Name nur auf ausdrücklichen Klick („Auf … suchen“) auf CoreScope suchen
+        assert app.json("PUT", "/api/settings/lookup", {"on": False, "url": url})[0] == 200
+        status, body = app.json("GET", "/api/stats/node?name=D-NW-Olpe")
+        assert status == 400 and body["detail"] == "„D-NW-Olpe“ unbekannt – noch kein Advert gehört"
+        assert app.json("GET", "/api/stats/node?name=D-NW-Olpe&ext=1")[1]["node"]["ext"] == url
+        status, body = app.json("GET", "/api/stats/node?name=Niemand&ext=1")
+        assert status == 400 and body["detail"].endswith(f"auch auf 127.0.0.1:{srv.server_port} nicht gefunden")
+    finally:
+        app.json("PUT", "/api/settings/lookup", {"on": False, "url": url})
+        srv.shutdown()
+
+
+def test_dm_contact_by_name(app):
+    """Privat antworten auf eine Kanalnachricht: Absender nur per Name bekannt."""
+    assert app.json("POST", "/api/contacts/dm", {"value": "Bob"})[1] == {"key": BOB, "added": False}
+    status, body = app.json("POST", "/api/contacts/dm", {"value": "Niemand"})
+    assert status == 400 and "unbekannt" in body["detail"]
+
+
+def test_node_detail_by_name(app):
+    """Klick auf einen Absendernamen im Chat: Details per Name."""
+    assert app.json("GET", "/api/stats/node?name=Bob")[1]["key"] == BOB
+    assert app.json("GET", "/api/stats/node?name=Rep-Saar")[1]["key"] == "ab" + "22" * 31  # auch andere Typen
+    status, body = app.json("GET", "/api/stats/node?name=Niemand")
+    assert status == 400 and "unbekannt" in body["detail"]

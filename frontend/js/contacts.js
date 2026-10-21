@@ -1,5 +1,5 @@
 // Kontakte: gespeicherte Kontakte und gehörte Knoten
-import {$,esc,ago,snrCls,hav,hasPos,NTYPE} from './util.js';
+import {$,esc,ago,snrCls,hav,hasPos,NTYPE,extHost} from './util.js';
 import {S,lastSeen,pathTxt,actions,onRender} from './state.js';
 import {run} from './api.js';
 
@@ -17,7 +17,7 @@ export function renderContacts(){
       else act+=`<button class="sm" data-act="resetPath" data-key="${n.key}" title="Pfad zurücksetzen"${on}>↺</button> <button class="sm" data-act="shareContact" data-key="${n.key}" title="Per Zero-Hop teilen"${on}>⇪</button> <button class="sm danger" data-act="removeContact" data-key="${n.key}" title="Löschen"${on}>🗑</button> `}
     if(c)act+=`<button class="sm" data-act="remote" data-key="${n.key}" title="${c.type===2||c.type===3?'Verwalten (Login, Status, Nachbarn, CLI) und Trace':'Trace'}">${c.type===2||c.type===3?'🛠':'📡'}</button> `;
     if(hasPos(n))act+=`<button class="sm" data-act="zoomTo" data-key="${n.key}">🗺</button>`;
-    return `<tr><td>${esc(n.name||'?')}${c&&!c.saved?' <span class="muted">(neu)</span>':''}${!c?' <span class="muted">(gehört)</span>':''}</td><td>${NTYPE[n.type??0]}</td><td class="mono">${n.key.slice(0,12)}</td><td>${ago(lastSeen(n))}</td><td class="mono">${c?pathTxt(c):'–'}</td><td class="mono ${snrCls(n.snr)}">${n.snr!=null?n.snr.toFixed(1):'–'}</td><td>${dist}</td><td style="white-space:nowrap">${act}</td></tr>`}).join('')||'<tr><td colspan="8" class="muted">Keine Einträge</td></tr>';
+    return `<tr><td>${esc(n.name||'?')}${c&&!c.saved?' <span class="muted">(neu)</span>':''}${!c?(n.ext?` <span class="muted" title="nicht selbst gehört, gefunden auf ${esc(n.ext)}">(${esc(extHost(n.ext))})</span>`:' <span class="muted">(gehört)</span>'):''}</td><td>${NTYPE[n.type??0]}</td><td class="mono">${n.key.slice(0,12)}</td><td>${ago(lastSeen(n))}</td><td class="mono">${c?pathTxt(c):'–'}</td><td class="mono ${snrCls(n.snr)}">${n.snr!=null?n.snr.toFixed(1):'–'}</td><td>${dist}</td><td style="white-space:nowrap">${act}</td></tr>`}).join('')||'<tr><td colspan="8" class="muted">Keine Einträge</td></tr>';
 }
 
 export function initContacts(){

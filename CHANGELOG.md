@@ -2,6 +2,9 @@
 
 ## Unveröffentlicht
 
+- Chat: Klick auf den Absendernamen öffnet das Detailfenster des Knotens
+- Chat: „✉ Privat antworten“ an jeder Kanalnachricht – unbekannte Absender werden per Name gesucht (gehört oder CoreScope) und als Kontakt gespeichert
+- Unbekannte Knoten auf CoreScope (z. B. live.saarmesh.de) nachschlagen: Hop-Hashes im Hintergrund, Treffer in der globalen Suche, Quelle in Kontakten, Karte und Detailfenster (Einstellung unter Gerät › App, standardmäßig aus)
 - Chat: Repeater-Zähler für eigene Nachrichten. Grauer Haken = gesendet ohne Rückmeldung, grüner Haken mit Zahl = so viele Repeater wurden beim Weiterleiten gehört (Klick zeigt Namen und SNR)
 - Chat: Kanalnachrichten, die nach 60 s kein Repeater weitergeleitet hat, lassen sich erneut senden
 - Statistik › Knoten: Hash-Kollisionen (aktive Repeater mit gleichem Hop-Hash bei 1, 2 und 3 Byte), Hinweis in der Übersicht

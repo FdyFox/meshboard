@@ -1,5 +1,5 @@
 // Karte (Leaflet): Knoten, Nachbar-Linien, Paketpfade, eigene Position
-import {$,$$,esc,ago,hav,hasPos,NTYPE,NLETTER,store,toast} from './util.js';
+import {$,$$,esc,ago,hav,hasPos,NTYPE,NLETTER,store,toast,extLink} from './util.js';
 import {api} from './api.js';
 import {S,nodesByHash,hopInfo,lastSeen,actions,ui,onRender,onShow,switchTab} from './state.js';
 import {baseLayers,defaultBase} from './basemaps.js';
@@ -21,6 +21,7 @@ function popupHtml(n){
   const ct=S.contacts.get(n.key),dist=hasPos(S.self)?hav(S.self.lat,S.self.lon,n.lat,n.lon):null;
   const nb=[...S.neighbors.entries()].find(([h])=>n.key.startsWith(h));
   return `<b>${esc(n.name||'?')}</b><br>${NTYPE[n.type??0]} · <span class="mono">${n.key.slice(0,12)}</span><br>`+
+   (n.ext?`Nicht selbst gehört – Quelle: ${extLink(n.ext,n.key)}${n.extSeen?' (dort vor '+ago(n.extSeen)+')':''}<br>`:'')+
    (n.heard?`Zuletzt gehört: vor ${ago(n.heard)}<br>`:'')+(n.advTs?`Advert: ${new Date(n.advTs*1000).toLocaleString('de-DE')}<br>`:'')+
    (n.snr!=null?`SNR ${n.snr.toFixed(1)} dB · RSSI ${n.rssi} dBm · ${n.hops===0?'direkt':n.hops+' Hops'}<br>`:'')+
    (nb?`<b>Direkter Nachbar</b> (${nb[1].n}× gehört, Ø SNR ${(nb[1].snrSum/nb[1].n).toFixed(1)})<br>`:'')+
@@ -36,8 +37,8 @@ function renderMap(){
   const seen=new Set();let cnt=0;
   for(const n of S.nodes.values()){
     if(!hasPos(n)||!types.has(n.type??0))continue;
-    const ls=lastSeen(n);if(age&&ls&&Date.now()-ls>age*1000)continue;if(age&&!ls)continue;
-    const old=ls&&Date.now()-ls>86400000;seen.add(n.key);cnt++;
+    const ls=lastSeen(n)||n.ext&&n.extSeen;if(age&&ls&&Date.now()-ls>age*1000)continue;if(age&&!ls)continue;
+    const old=n.ext||ls&&Date.now()-ls>86400000;seen.add(n.key);cnt++;
     let m=markers.get(n.key);
     if(!m){m=L.marker([n.lat,n.lon],{icon:icon(n,old)}).addTo(map);m.bindPopup('');m.on('popupopen',()=>m.setPopupContent(popupHtml(S.nodes.get(n.key)||n)));markers.set(n.key,m)}
     else{m.setLatLng([n.lat,n.lon]);m.setIcon(icon(n,old));if(m.isPopupOpen())m.setPopupContent(popupHtml(n))}

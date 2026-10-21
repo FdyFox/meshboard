@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from meshcore import EventType, MeshCore
 from meshcore.parsing import parse_status
 
-from . import push
+from . import lookup, push
 from .discovery import PUBLIC_SECRET, RoomIndex, decrypt, guess_region, mac_ok, name_variants, room_secret
 from .packets import PT, ROUTES, airtime_ms, has_pos, hav, match_region, packet_hash, parse_packet, public, region_key
 from .store import MAX_MSGS, Store, bucket_ms
@@ -42,6 +42,9 @@ FWD = (2, 3)         # Knotentypen, die weiterleiten (Repeater, Room-Server)
 MAX_HOP_KM = 120     # weiter reicht ein Hop praktisch nie; weitere Sprünge gelten bei der Hop-Zuordnung als unplausibel
 REPLAY_MAX = 50000   # Empfänge je Wiedergabe auf der Karte
 SAMPLE_S = 300       # Gerätewerte (Rauschen, Batterie, Sendezeit) alle 5 Minuten speichern
+LOOKUP_RETRY_S = 24 * 3600  # CoreScope: denselben Hash frühestens nach dieser Zeit erneut nachschlagen
+LOOKUP_GAP_S = 2.0   # … Abstand zwischen Anfragen im Hintergrund
+LOOKUP_QUEUE = 100   # … höchstens so viele wartende Hashes
 
 # Duty-Cycle-Grenzen im EU-868-Band (ETSI EN 300 220 / ERC REC 70-03), Frequenzen in MHz
 DUTY_BANDS = [(863.0, 865.0, 0.1), (865.0, 868.0, 1.0), (868.0, 868.6, 1.0), (868.7, 869.2, 0.1),
@@ -84,6 +87,11 @@ def _pl(p: dict) -> int:
     if p.get("path_len") == 255 or p.get("path_hash_mode", 0) < 0:
         return 255
     return ((p.get("path_hash_mode") or 0) << 6) | (p.get("path_len") or 0)
+
+
+def hop_label(r: dict):
+    """Name eines zugeordneten Hops, „?“ = vermutet (mehrdeutiger Hash, nach Lage gewählt)."""
+    return r["name"] and r["name"] + ("?" if r["guess"] else "")
 
 
 def norm_self(p: dict) -> dict:
@@ -146,6 +154,11 @@ class Mesh:
         self.push_cfg: dict = {"type": "", "url": "", "chat": "", "token": "",
                                "events": {"dm": True, "mention": True, "watch": True, "chan": False}} | store.get("push", {})
         self._push_times: list = []
+        # Unbekannte Knoten auf einer CoreScope-Instanz nachschlagen (Opt-in): Einstellung, Warteschlange, letzte Versuche
+        self.lookup_cfg: dict = {"on": False, "url": lookup.DEFAULT_URL} | store.get("lookup", {})
+        self._lk_queue: list = []
+        self._lk_tried: dict = {}  # Suchbegriff → Zeitpunkt (ms)
+        self._lk_busy = False
         self.auto_reply: dict = store.get("autoReply", {})  # Kanal-Schlüssel (chan:Name:Secret) → Regel
         self._auto_last: dict = {}
         self.channels: list = store.get("channels", [])  # zuletzt vom Gerät gelesen (Namen auch ohne Verbindung)
@@ -234,7 +247,7 @@ class Mesh:
         return {"chanRegion": self.chan_region, "extraRegions": self.extra_regions, "notify": self.notify,
                 "ackTemplate": self.ack_template, "ackDefault": DEFAULT_ACK, "watch": self.watch,
                 "push": {k: v for k, v in self.push_cfg.items() if k != "token"} | {"tokenSet": bool(self.push_cfg.get("token"))},
-                "autoReply": self.auto_reply}
+                "autoReply": self.auto_reply, "lookup": self.lookup_cfg}
 
     def set_ack_template(self, s: str):
         """Vorlage der Schnellantwort; leer = Standard."""
@@ -390,6 +403,87 @@ class Mesh:
             await asyncio.to_thread(push.send, dict(self.push_cfg), "Meshboard", "Testnachricht – Push funktioniert ✓", "test")
         except Exception as e:
             raise MeshError(f"Push fehlgeschlagen: {e}")
+
+    # ================= Knoten auf CoreScope nachschlagen =================
+    def set_lookup(self, on: bool, url: str):
+        url = (url or "").strip().rstrip("/") or lookup.DEFAULT_URL
+        if not re.match(r"^https?://[^/\s]+$", url):
+            raise MeshError("Adresse wie https://live.saarmesh.de angeben (ohne Pfad)")
+        if url != self.lookup_cfg.get("url"):
+            self._lk_tried.clear()
+        self.lookup_cfg = {"on": bool(on), "url": url}
+        self.store.set("lookup", self.lookup_cfg)
+        self.emit("settings", settings=self.settings())
+
+    def lookup_soon(self, h: str):
+        """Hop-Hash bzw. Schlüssel-Präfix ohne bekannten Knoten im Hintergrund nachschlagen (gedrosselt)."""
+        h = h.lower()
+        if (not self.lookup_cfg["on"] or h in self._lk_queue or len(self._lk_queue) >= LOOKUP_QUEUE
+                or now_ms() - self._lk_tried.get(h, 0) < LOOKUP_RETRY_S * 1000):
+            return
+        self._lk_queue.append(h)
+        if not self._lk_busy:
+            self._lk_busy = True
+            self.spawn(self._lookup_worker())
+
+    async def _lookup_worker(self):
+        try:
+            while self._lk_queue and self.lookup_cfg["on"]:
+                h = self._lk_queue.pop(0)
+                if not self._hop_cands(h, False):
+                    try:
+                        await self.lookup(h, keep=True, fwd=True)
+                    except MeshError as e:
+                        log.warning("[!] %s", e)
+                    await asyncio.sleep(LOOKUP_GAP_S)
+        finally:
+            self._lk_busy = False
+            self._lk_queue.clear()
+
+    async def lookup(self, q: str, keep=False, fwd=False) -> list:
+        """Auf CoreScope suchen. keep: Treffer als Knoten übernehmen (helfen dann beim Zuordnen von Hops).
+        fwd: nur weiterleitende Knoten (für Hop-Hashes – Companions und Sensoren tauchen nie als Hop auf)."""
+        url = self.lookup_cfg["url"]
+        if keep:
+            self._lk_tried[q.lower()] = now_ms()
+        try:
+            hits = await asyncio.to_thread(lookup.search, url, q)
+        except RuntimeError as e:
+            raise MeshError(f"Suche auf {url.split('://', 1)[1]} fehlgeschlagen: {e}")
+        if fwd:
+            hits = [x for x in hits if x["type"] in FWD]
+        own = (self.self or {}).get("key")
+        out = []
+        for x in hits:
+            n = self.nodes.get(x["key"])
+            if n and not n.get("ext") or x["key"] == own:
+                out.append(n or x)  # selbst gehört: eigene Daten haben Vorrang
+            elif keep:
+                out.append(self._keep_ext(x))
+            else:
+                out.append(x)
+        if keep and hits:
+            log.info("[+] %s: %d Knoten zu „%s“ übernommen", url, len(hits), q)
+        return out
+
+    def _keep_ext(self, x: dict) -> dict:
+        """Treffer von CoreScope als Knoten übernehmen (nur wenn nicht selbst gehört)."""
+        n = (self.nodes.get(x["key"]) or {}) | x
+        self.nodes[x["key"]] = n
+        self._dirty_nodes.add(x["key"])
+        self.emit("node", n=n)
+        return n
+
+    async def ensure_node(self, key: str, hash_: str):
+        """Vor den Details: Knoten (Schlüssel) bzw. Hop-Hash ohne bekannten Knoten auf CoreScope nachschlagen."""
+        q = (key or hash_ or "").lower()
+        if not self.lookup_cfg["on"] or not re.fullmatch(r"[0-9a-f]{2,64}", q) or self._hop_cands(q, False):
+            return
+        if key or now_ms() - self._lk_tried.get(q, 0) >= LOOKUP_RETRY_S * 1000:
+            try:
+                await self.lookup(q, keep=True, fwd=not key)
+            except MeshError as e:
+                log.warning("[!] %s", e)
 
     def _on_new_msg(self, conv: str, m: dict):
         """Neue empfangene Nachricht: Push und Auto-Antwort."""
@@ -769,6 +863,7 @@ class Mesh:
         n["name"] = nc["name"] or n.get("name")
         n["type"] = nc["type"]
         n["inContacts"] = True
+        n.pop("ext", None)
         if has_pos(nc):
             n["lat"], n["lon"] = nc["lat"], nc["lon"]
         if nc["lastAdvert"] and nc["lastAdvert"] > (n.get("advTs") or 0):
@@ -859,6 +954,52 @@ class Mesh:
     async def remove_contact(self, key):
         await self._lib("remove_contact", bytes.fromhex(key))
         self._contact_gone(key)
+
+    async def node_by_name(self, name: str, types=None, ext=False) -> dict | None:
+        """Knoten zu einem Absendernamen (Nachrichten tragen nur den Namen): gespeicherter Kontakt, sonst gehörter
+        Knoten (bei gleichen Namen der zuletzt gehörte), sonst Treffer auf CoreScope (falls eingeschaltet, wird übernommen).
+        types: nur diese Knotentypen; ohne Angabe werden Companions und Room-Server bevorzugt.
+        ext: auf CoreScope suchen, auch wenn das Nachschlagen aus ist (ausdrücklicher Klick)."""
+        def ok(n, ts):
+            return n.get("name") == name and (ts is None or n.get("type") in ts)
+        for ts in ([types] if types else [(1, 3), None]):
+            c = next((c for c in self.contacts.values() if ok(c, ts) and c["saved"]), None)
+            if c:
+                return self.nodes.get(c["key"]) or c
+            l = [n for n in self.nodes.values() if ok(n, ts)]
+            if l:
+                return max(l, key=lambda n: max(self.node_last(n["key"]), (n.get("advTs") or 0) * 1000, n.get("extSeen") or 0))
+        if not self.lookup_cfg["on"] and not ext:
+            return None
+        try:
+            hits = await self.lookup(name)
+        except MeshError as e:
+            if ext:
+                raise
+            log.warning("[!] %s", e)
+            return None
+        for ts in ([types] if types else [(1, 3), None]):
+            l = [n for n in hits if ok(n, ts)]
+            if l:
+                n = max(l, key=lambda n: n.get("extSeen") or 0)
+                return self._keep_ext(n) if n.get("ext") else n
+        return None
+
+    def unknown_name(self, name: str, ext=False) -> MeshError:
+        if ext or self.lookup_cfg["on"]:
+            return MeshError(f"„{name}“ unbekannt – auch auf {lookup.host(self.lookup_cfg['url'])} nicht gefunden")
+        return MeshError(f"„{name}“ unbekannt – noch kein Advert gehört")
+
+    async def dm_contact(self, name: str) -> dict:
+        """Privat antworten auf eine Kanalnachricht: Kontakt zum Absendernamen finden oder im Gerät anlegen."""
+        n = await self.node_by_name(name, (1, 3))
+        if not n:
+            raise self.unknown_name(name)
+        c = self.contacts.get(n["key"])
+        if c and c["saved"]:
+            return {"key": c["key"], "added": False}
+        await self.add_contact(n["key"])
+        return {"key": n["key"], "added": True}
 
     async def add_contact(self, key):
         c = self.raw_contacts.get(key)
@@ -1492,6 +1633,8 @@ class Mesh:
                 secs, snr = struct.unpack_from("<ib", data, o + 4)
                 o += 9
                 nd = self._hop_cands(pk, False)
+                if not nd:
+                    self.lookup_soon(pk)
                 nd = nd[0] if len(nd) == 1 else None
                 out.append({"hash": pk, "key": nd and nd["key"], "name": nd and nd.get("name"), "type": nd and nd.get("type"),
                             "secsAgo": secs, "snr": snr / 4,
@@ -1587,6 +1730,7 @@ class Mesh:
             node["type"] = d.get("ntype")
             if has_pos(d):
                 node["lat"], node["lon"] = d["lat"], d["lon"]
+            node.pop("ext", None)
             node.update(heard=p["t"], snr=snr, rssi=rssi, hops=p["hopCount"], path=p["path"],
                         advTs=max(node.get("advTs") or 0, d.get("ts") or 0))
             self.nodes[d["key"]] = node
@@ -1616,6 +1760,8 @@ class Mesh:
             res = self.resolve_path(p["path"], d if p["ptype"] == 4 else None, self.self)
             p["res"] = [[r["key"], r["n"]] for r in res]  # je Hop: Schlüssel (oder null) und Anzahl Kandidaten
             for r in res:
+                if not r["n"]:
+                    self.lookup_soon(r["h"])
                 if r["key"] and r["n"] == 1:
                     self.hop_seen[r["key"]] = p["t"]
                     if self.watch:
@@ -1822,13 +1968,35 @@ class Mesh:
             p["points"], p["unresolved"] = self._path_points(node, p["path"], me)
         st["me"] = [me["lat"], me["lon"], me.get("name") or "ich"] if me else None
         # Namen zu Hop-Hashes: Nachbarn im Netz liegen nahe am Knoten, direkte Nachbarn nahe bei uns
-        st["peers"] = [{"hash": h, "out": a, "in": b, "name": self._near_name(h, node)} for h, a, b in st["peers"]]
-        st["via"] = [{"hash": h, "count": c, "snr": s, "name": self._hop_name(h) if h else None} for h, c, s in st["via"]]
+        # Derselbe Knoten kommt je nach Hash-Größe als 1-, 2- oder 3-Byte-Hash vor: eindeutig zugeordnete zusammenfassen
+        peers: dict = {}
+        for h, a, b in st["peers"]:
+            r = self._near_hop(h, node)
+            e = peers.get(r["key"] if r["key"] and not r["guess"] else h)
+            if e:
+                e["out"] += a
+                e["in"] += b
+                e["hash"] = max(e["hash"], h, key=len)
+            else:
+                peers[r["key"] if r["key"] and not r["guess"] else h] = {"hash": h, "out": a, "in": b, "name": hop_label(r)}
+        st["peers"] = sorted(peers.values(), key=lambda p: -(p["out"] + p["in"]))[:15]
+        via: dict = {}
+        for h, c, s in st["via"]:
+            r = self.resolve_path([h], None, self.self)[0] if h else {"key": None, "guess": False, "name": None}
+            k = r["key"] if r["key"] and not r["guess"] else h
+            e = via.get(k)
+            if e:
+                e["snr"] = None if e["snr"] is None or s is None else (e["snr"] * e["count"] + s * c) / (e["count"] + c)
+                e["count"] += c
+                e["hash"] = max(e["hash"], h, key=len)
+            else:
+                via[k] = {"hash": h, "count": c, "snr": s, "name": hop_label(r)}
+        st["via"] = sorted(via.values(), key=lambda v: -v["count"])[:10]
         return st
 
-    def _near_name(self, h: str, near: dict):
-        r = self.resolve_path([h], near if has_pos(near) else None, None if has_pos(near) else self.self)[0]
-        return r["name"] and r["name"] + ("?" if r["guess"] else "")
+    def _near_hop(self, h: str, near: dict) -> dict:
+        """Hop nahe einem Knoten zuordnen (Nachbarn im Netz liegen nahe am Knoten; ohne Position: nahe bei uns)."""
+        return self.resolve_path([h], near if has_pos(near) else None, None if has_pos(near) else self.self)[0]
 
     def _path_points(self, start: dict, path: str, me: dict | None):
         """Koordinaten eines Weges: Start-Knoten → Hops (über ihre Hashes) → eigene Node."""
@@ -1978,6 +2146,7 @@ class Mesh:
         self._dirty_nodes.clear()
         self._dirty_msgs.clear()
         self.nodes = {}
+        self._lk_tried.clear()
         self.msgs = {}
         self.rooms = {}  # gehörte Räume samt Verlauf; beobachtete Namen (Einstellung) bleiben
         self._rooms_dirty = True

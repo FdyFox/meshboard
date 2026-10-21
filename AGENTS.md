@@ -15,6 +15,7 @@ Sprache: UI-Texte, Fehlermeldungen, Kommentare, Commit-Messages und README auf *
 | `backend/mesh.py` | Klasse `Mesh`: Verbindung über die Bibliothek `meshcore`, gesamter Zustand (Kontakte, Knoten, Kanäle, Pakete, Nachrichten, Nachbarn, Statistik), Chat-Logik (ACKs, Region pro Kanal), Auto-Reconnect, Protokoll-Log |
 | `backend/packets.py` | Funkpakete aus dem RX-Log zerlegen (`parse_packet`), Region per HMAC-Transport-Code erkennen |
 | `backend/discovery.py` | Hashtag-Räume: `RoomIndex` (Kanal-Hash → Kandidaten, MAC-Prüfung), `decrypt` (AES-128-ECB), `guess_region` (Regions-Code gegen Namensliste) |
+| `backend/lookup.py` | Unbekannte Knoten auf einer CoreScope-Instanz suchen (`GET /api/nodes/search?q=`), `urllib` per `asyncio.to_thread` |
 | `backend/push.py` | Push-Benachrichtigungen (ntfy, Telegram, Webhook) mit `urllib`, läuft per `asyncio.to_thread` |
 | `backend/candidates.py` | Namenslisten für Regionen und Räume (klein, ohne `#`) |
 | `backend/store.py` | SQLite (stdlib `sqlite3`): Knoten, Nachrichten (pro Gerät, max. 500 pro Unterhaltung), Einstellungen, Paketverlauf (`packets`, Aufbewahrung `PACKET_DAYS`) samt Statistik-Abfragen (`packet_stats`) |
@@ -36,6 +37,7 @@ Sprache: UI-Texte, Fehlermeldungen, Kommentare, Commit-Messages und README auf *
 - Die Protokoll-Konstanten stammen aus MeshCore `examples/companion_radio`. Was die Bibliothek nicht passend anbietet, wird roh gesendet (Scope/Region, Hash-Modus, Nachrichten senden, `SET_OTHER`). Das Format muss zum bisherigen Verhalten passen: Regionsname ohne `#` und Schlüssel `sha256('#'+name)[:16]`.
 - **Anfragen ins Netz** (Login, Status, Nachbarn, Trace) laufen über `Mesh._remote`: Befehl unter `self.lock` senden, Antwort ohne Lock abwarten, damit ein langsamer Repeater keine anderen Befehle blockiert. Passwörter und Push-Token nie an den Browser schicken.
 - **Hop-Hashes** ordnet `Mesh.resolve_path` Knoten zu (Repeater bevorzugt, bei Mehrdeutigkeit kürzester plausibler Weg). Pakete tragen das Ergebnis als `res` (`[Schlüssel|null, Kandidaten]` je Hop), im Frontend über `hopInfo(p, i)`. Keine eigene Auflösung per Hash im Frontend bauen.
+- **CoreScope-Abfrage** (Opt-in, `Mesh.lookup_cfg`): Hop-Hashes ohne Kandidaten gehen über `Mesh.lookup_soon` in eine gedrosselte Warteschlange. Treffer landen als Knoten mit `ext` (Quell-URL) und `extSeen` in `self.nodes`. Eigenes Advert oder Kontakt entfernt `ext`, eigene Daten haben immer Vorrang.
 - Buttons in generiertem HTML nutzen `data-act="name"` plus `data-…`-Attribute. Die Funktion liegt in `actions` (`state.js`), ein globaler Klick-Handler ruft sie auf. Keine Inline-`onclick`, denn ES-Module haben keine globalen Funktionen.
 
 ## Code-Stil
