@@ -2,6 +2,8 @@
 
 ## Unveröffentlicht
 
+- Regionen: `de-sl`, `de-rp`, `de-west`, `de-mitte`, `de-sued` u. a. erkannt, Regionsnamen von CoreScope (falls eingeschaltet), ältere Pakete und Nachrichten mit „Region ?…“ werden nachträglich zugeordnet
+- Gerät › Im Netz gehört: übersichtlicher (zwei breite Spalten, „gehört von“ einzeilig mit Tooltip)
 - Chat: Klick auf den Absendernamen öffnet das Detailfenster des Knotens
 - Chat: „✉ Privat antworten“ an jeder Kanalnachricht – unbekannte Absender werden per Name gesucht (gehört oder CoreScope) und als Kontakt gespeichert
 - Unbekannte Knoten auf CoreScope (z. B. live.saarmesh.de) nachschlagen: Hop-Hashes im Hintergrund, Treffer in der globalen Suche, Quelle in Kontakten, Karte und Detailfenster (Einstellung unter Gerät › App, standardmäßig aus)

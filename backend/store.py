@@ -115,6 +115,15 @@ class Store:
         self.db.executemany("UPDATE packets SET ph=COALESCE(ph, ?), air=COALESCE(air, ?), path=COALESCE(path, ?) WHERE id=?", rows)
         self.db.commit()
 
+    def unknown_region_packets(self) -> list:
+        """Pakete, deren Region (noch) unbekannt ist: (id, data)."""
+        return self.db.execute("SELECT id, data FROM packets WHERE region='?'").fetchall()
+
+    def set_packet_regions(self, rows: list):
+        """rows: (region, data, id)"""
+        self.db.executemany("UPDATE packets SET region=?, data=? WHERE id=?", rows)
+        self.db.commit()
+
     def replay_rows(self, since: int, until: int, limit: int) -> list:
         """Empfänge mit Pfad (oder Adverts) im Zeitraum, für die Wiedergabe auf der Karte."""
         return self.db.execute(

@@ -359,3 +359,49 @@ def test_node_stats_merges_hash_sizes(tmp_path):
     st = m.node_stats("cd" * 32, None, 24)
     assert [(p["hash"], p["out"], p["name"]) for p in st["peers"]] == [("5c3d7e", 3, "Rep-R")]
     assert [(v["hash"], v["count"], v["snr"], v["name"]) for v in st["via"]] == [("5c3d7e", 3, 3.0, "Rep-R")]
+
+
+def test_rescan_regions(tmp_path):
+    """Neuer Regionsname: Pakete im Verlauf und Nachrichten mit „Region ?code“ werden nachträglich zugeordnet."""
+    import struct
+    from tests.fake_companion import region_code
+    m = make(tmp_path)
+    pl = bytes([0x99]) + b"geheim"
+    code = region_code("xyz-gibts-nicht", 5, pl)
+    m.on_raw_packet(bytes([5 << 2]) + struct.pack("<HH", code, 0) + b"\x00" + pl, 4.0, -95)
+    t = m.packets[-1]["t"]
+    assert m.packets[-1]["region"] is None and m.region_stats["?"]["count"] == 1
+    m.dev_key = "dev"
+    m.add_msg("ch:0", {"dir": "in", "from": "X", "text": "hi", "ts": t, "rx": t + 500, "regionCode": format(code, "04x")})
+    m._flush()
+    m.set_extra_regions("xyz-gibts-nicht")
+    assert m.packets[-1]["region"] == "xyz-gibts-nicht" and "?" not in m.region_stats
+    assert m.store.unknown_region_packets() == []
+    assert m.msgs["ch:0"][-1]["region"] == "xyz-gibts-nicht"
+    m._flush()
+    m2 = make(tmp_path)  # „Neustart“: Verlauf trägt die Region
+    assert m2.packets[-1]["region"] == "xyz-gibts-nicht"
+
+
+def test_corescope_region_names():
+    """Regionsnamen aus dem Scope-Audit von CoreScope (klein, ohne '#', ohne Doppelte und Unsinn)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from backend import lookup
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = {"repeaters": [{"declaredRegions": ["de-sl", "#SaarLorLux"]}, {"declaredRegions": ["de-sl", "<script>"]}, {}]}
+            self.send_response(200 if self.path == "/api/scope-audit" else 404)
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert lookup.region_names(f"http://127.0.0.1:{srv.server_port}/") == ["de-sl", "saarlorlux"]
+    finally:
+        srv.shutdown()

@@ -19,7 +19,7 @@ from meshcore import EventType, MeshCore
 from meshcore.parsing import parse_status
 
 from . import lookup, push
-from .discovery import PUBLIC_SECRET, RoomIndex, decrypt, guess_region, mac_ok, name_variants, room_secret
+from .discovery import CANDIDATE_REGIONS, PUBLIC_SECRET, RoomIndex, decrypt, guess_region, mac_ok, name_variants, room_secret
 from .packets import PT, ROUTES, airtime_ms, has_pos, hav, match_region, packet_hash, parse_packet, public, region_key
 from .store import MAX_MSGS, Store, bucket_ms
 
@@ -159,6 +159,10 @@ class Mesh:
         self._lk_queue: list = []
         self._lk_tried: dict = {}  # Suchbegriff → Zeitpunkt (ms)
         self._lk_busy = False
+        # Regionsnamen, die Repeater laut CoreScope konfiguriert haben (nur bei unbekannten Regions-Codes abgefragt)
+        self.ext_regions: list = store.get("extRegions", [])
+        self._ext_region_keys = [(n, region_key(n)) for n in self.ext_regions]
+        self._rg_tried = 0
         self.auto_reply: dict = store.get("autoReply", {})  # Kanal-Schlüssel (chan:Name:Secret) → Regel
         self._auto_last: dict = {}
         self.channels: list = store.get("channels", [])  # zuletzt vom Gerät gelesen (Namen auch ohne Verbindung)
@@ -513,6 +517,7 @@ class Mesh:
     async def start(self):
         self.lock = asyncio.Lock()
         self.build_regions()
+        self.rescan_regions(startup=True)
         self.spawn(self._saver())
         self.spawn(self._supervisor())
         self.spawn(self._stat_loop())
@@ -1141,17 +1146,84 @@ class Mesh:
 
     def _regions_changed(self):
         self.build_regions()
-        for p in self.packets:
-            if p.get("tc") and not p.get("region"):
-                p["region"] = self._find_region(p)
         self.emit("settings", settings=self.settings())
         self.emit_status()
-        self.emit("packets", packets=[public(p) for p in self.packets[-SNAPSHOT_PKTS:]])
+        self.rescan_regions()
 
     def _find_region(self, p) -> str | None:
-        """Erst bekannte Regionen, dann die Kandidatenliste."""
+        """Erst bekannte Regionen, dann die Kandidatenliste, dann Namen von CoreScope."""
         return match_region(p, self.regions) or guess_region(
-            p["ptype"], p["_payload"], p["tc"][0], skip={n for n, _ in self.regions})
+            p["ptype"], p["_payload"], p["tc"][0], skip={n for n, _ in self.regions}) or match_region(p, self._ext_region_keys)
+
+    def rescan_regions(self, startup=False):
+        """Pakete mit unbekannter Region (Speicher und Verlauf) neu zuordnen, ebenso Nachrichten mit „Region ?code“.
+        Nachrichten tragen nur den Code: zugeordnet über Code und Empfangszeit (± 60 s) des Pakets.
+        Beim Start nur, wenn sich die Namen seit dem letzten Durchlauf geändert haben."""
+        names = [n for n, _ in self.regions] + [n for n, _ in CANDIDATE_REGIONS] + self.ext_regions
+        sig = packet_hash(0, "\n".join(names).encode())
+        if startup and self.store.get("regionScan") == sig:
+            return
+        self._flush()  # noch nicht gespeicherte Pakete mit erfassen
+        found: dict = {}  # Code → [(Zeit, Name)]
+        mem = 0
+        for p in self.packets:
+            if p.get("tc") and not p.get("region") and (r := self._find_region(p)):
+                p["region"] = r
+                mem += 1
+        ups = []
+        for pid, data in self.store.unknown_region_packets():
+            p = json.loads(data)
+            try:
+                pp = parse_packet(bytes.fromhex(p.get("raw", "")), {})
+            except (IndexError, ValueError, struct.error):
+                continue
+            if pp.get("tc") and (r := self._find_region(pp)):
+                p["region"] = r
+                ups.append((r, json.dumps(p, ensure_ascii=False), pid))
+                found.setdefault(format(pp["tc"][0], "04x"), []).append((p["t"], r))
+        self.store.set_packet_regions(ups)
+        msgs = 0
+        for conv, arr in self.msgs.items():
+            for m in arr:
+                if m.get("regionCode") and not m.get("region"):
+                    r = next((r for t, r in found.get(m["regionCode"], []) if abs(t - (m.get("rx") or 0)) <= 60000), None)
+                    if r:
+                        m["region"] = r
+                        self._dirty_msgs[m["id"]] = (conv, m)
+                        msgs += 1
+        self.store.set("regionScan", sig)
+        if mem or ups or msgs:
+            log.info("[+] Regionen nachträglich erkannt: %d Pakete im Verlauf, %d Nachrichten", len(ups), msgs)
+            self.region_stats = {}
+            for p in self.packets:
+                if p.get("tc"):
+                    self._region_stat(p)
+            if not startup:
+                self.emit("snapshot", state=self.snapshot())
+        elif not startup:
+            self.emit("packets", packets=[public(p) for p in self.packets[-SNAPSHOT_PKTS:]])
+
+    def region_lookup_soon(self):
+        """Unbekannter Regions-Code: höchstens einmal am Tag die Regionsnamen von CoreScope holen."""
+        if not self.lookup_cfg["on"] or now_ms() - self._rg_tried < LOOKUP_RETRY_S * 1000:
+            return
+        self._rg_tried = now_ms()
+
+        async def run():
+            url = self.lookup_cfg["url"]
+            try:
+                names = await asyncio.to_thread(lookup.region_names, url)
+            except RuntimeError as e:
+                log.warning("[!] Regionsnamen von %s: %s", url, e)
+                return
+            new = [n for n in names if n not in self.ext_regions]
+            if new:
+                log.info("[+] %s: %d neue Regionsnamen (%s)", url, len(new), ", ".join(new))
+                self.ext_regions = (self.ext_regions + new)[-200:]
+                self._ext_region_keys = [(n, region_key(n)) for n in self.ext_regions]
+                self.store.set("extRegions", self.ext_regions)
+                self.rescan_regions()
+        self.spawn(run())
 
     def _region_stat(self, p) -> list:
         name = p.get("region") or "?"
@@ -1754,6 +1826,8 @@ class Mesh:
         if p.get("tc"):
             p["region"] = self._find_region(p)
             rs = self._region_stat(p)
+            if not p["region"]:
+                self.region_lookup_soon()
         if p["ptype"] in (5, 6) and p.get("_payload"):
             cs = self._on_group_packet(p)
         if p["path"] and p["ptype"] != 9:

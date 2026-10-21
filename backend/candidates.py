@@ -23,6 +23,9 @@ niedersachsen nds schleswig-holstein sh hamburg hh bremen hb berlin brandenburg 
 mecklenburg-vorpommern mv sachsen-anhalt st thueringen thüringen th
 karlsruhe mannheim heidelberg stuttgart frankfurt wiesbaden darmstadt koeln köln duesseldorf
 muenchen münchen nuernberg nürnberg leipzig dresden hannover
+de-sl de-rp de-bw de-by de-be de-bb de-hb de-hh de-he de-mv de-ni de-nw de-sn de-st de-sh de-th
+de-west de-ost de-nord de-sued de-süd de-mitte de-nordwest de-nordost de-suedwest de-südwest de-suedost de-südost
+de-saar de-pfalz scn lux-de fr-ge fr-57 fr-67 fr-68 lu-ca
 test local lokal regional home mesh meshcore
 """
 
