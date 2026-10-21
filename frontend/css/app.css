@@ -124,7 +124,7 @@ label.frm{flex-wrap:nowrap;align-items:flex-start}label.frm input[type=checkbox]
 /* Verbindung */
 .conn-frm select{flex:0 0 auto}
 .dot.wait{background:var(--warn)}
-.nettbl{max-height:260px;overflow:auto}.nettbl table{font-size:13px}.nettbl td{white-space:nowrap}.nettbl td.wrap{white-space:normal}
+.nettbl{max-height:260px;overflow:auto}.nettbl table{font-size:13px}.nettbl td{white-space:nowrap}.nettbl td.wrap{white-space:normal}.nettbl td.ell{max-width:240px;overflow:hidden;text-overflow:ellipsis}.nettbl table{width:100%}
 /* Statistik */
 .small{font-size:12px}
 .subtabs{display:flex;gap:4px;padding:6px 12px;background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto}

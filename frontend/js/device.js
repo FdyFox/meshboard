@@ -43,7 +43,7 @@ function renderNet(){
   const tbl=(head,rows)=>rows.length?`<table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`:'<div class="muted" style="font-size:12px">noch nichts gehört</div>';
   const rg=Object.entries(S.regionStats).sort((a,b)=>b[1].count-a[1].count).map(([n,e])=>{
     const src=n==='?'?'<span class="muted">unbekannt</span>':'<span class="hash known">#'+esc(n)+'</span>'+(S.regions.includes(n)?'':` <span class="muted" title="aus der eingebauten Namensliste erkannt">Liste</span> <button class="sm" data-act="saveRegion" data-name="${esc(n)}" title="Als bekannte Region speichern (Gerät › Weitere Regionen)">Speichern</button>`);
-    return `<tr><td>${src}</td><td class="mono">${e.count}</td><td>${ago(e.last)}</td><td class="wrap muted">${esc(e.nodes.join(', '))}</td></tr>`});
+    return `<tr><td>${src}</td><td class="mono">${e.count}</td><td>${ago(e.last)}</td><td class="muted ell" title="${esc(e.nodes.join('\n'))}">${esc(e.nodes.join(', '))}</td></tr>`});
   $('#netRegions').innerHTML=tbl(['Region','Pakete','zuletzt','gehört von'],rg);
   const onDev=h=>S.channels.some(c=>c.hash===h);
   const ch=Object.values(S.chanStats).sort((a,b)=>b.count-a.count).map(e=>{

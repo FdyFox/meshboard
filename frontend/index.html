@@ -210,12 +210,12 @@
             <div class="frm" style="margin-top:2px"><input id="extraRegions" placeholder="z. B. pfalz, lux"></div>
           </div>
           <div class="card" style="grid-column:1/-1"><h3>Im Netz gehört</h3>
-            <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr))">
-              <div><h4 class="muted" style="margin:0 0 6px;font-size:12px">Regionen (Flood-Pakete mit Region)</h4><div class="nettbl" id="netRegions"></div></div>
-              <div><h4 class="muted" style="margin:0 0 6px;font-size:12px">Kanäle und Räume</h4><div class="nettbl" id="netChans"></div></div>
+            <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))">
+              <div style="min-width:0"><h4 class="muted" style="margin:0 0 6px;font-size:12px">Regionen (Flood-Pakete mit Region)</h4><div class="nettbl" id="netRegions"></div></div>
+              <div style="min-width:0"><h4 class="muted" style="margin:0 0 6px;font-size:12px">Kanäle und Räume</h4><div class="nettbl" id="netChans"></div></div>
             </div>
             <div class="frm" id="netWatch"></div>
-            <p class="muted" style="font-size:12px;margin:4px 0 0">Regionen und Hashtag-Räume lassen sich nicht zurückrechnen, nur gegen Namen prüfen: bekannte Namen, eine eingebaute Liste (SaarLorLux, Länder, gängige Räume) und eigene Namen (Chat › „#Raum suchen“, Gerät › „Weitere Regionen“). Räume mit privatem Schlüssel bleiben unlesbar.</p>
+            <p class="muted" style="font-size:12px;margin:4px 0 0">Regionen und Hashtag-Räume lassen sich nicht zurückrechnen, nur gegen Namen prüfen: bekannte Namen, eine eingebaute Liste (SaarLorLux, Länder, gängige Räume), eigene Namen (Chat › „#Raum suchen“, Gerät › „Weitere Regionen“) und – falls eingeschaltet – die Regionsnamen von CoreScope. Räume mit privatem Schlüssel bleiben unlesbar.</p>
           </div>
           <details class="card logcard" style="grid-column:1/-1"><summary><h3>Protokoll-Log <span class="muted small">(Fehlersuche)</span></h3></summary>
             <label class="frm muted small"><input type="checkbox" id="logOn"> aufzeichnen</label>
