@@ -344,3 +344,18 @@ def test_push_events(tmp_path, monkeypatch):
     for bad in ({"type": "ntfy", "url": "ntfy.sh/x"}, {"type": "ntfy", "url": "https://ntfy.sh"}, {"type": "telegram"}, {"type": "x"}):
         with pytest.raises(MeshError):
             m.set_push(bad)
+
+
+def test_node_stats_merges_hash_sizes(tmp_path):
+    """Derselbe Repeater als 1-, 2- und 3-Byte-Hop erscheint in den Knoten-Details nur einmal."""
+    m = make(tmp_path)
+    rep = b"\x5c\x3d\x7e" + b"\x11" * 29
+    m.on_raw_packet(advert(key=rep, name=b"Rep-R", hops=b""), 5.0, -90)
+    for i, hs in enumerate((1, 2, 3)):
+        raw = bytearray(advert(key=b"\xcd" * 32, name=b"X%d" % i, hops=rep[:hs]))
+        raw[1] = (hs - 1) << 6 | 1  # ein Hop mit hs Byte
+        m.on_raw_packet(bytes(raw), 2.0 + i, -100)
+    m._flush()
+    st = m.node_stats("cd" * 32, None, 24)
+    assert [(p["hash"], p["out"], p["name"]) for p in st["peers"]] == [("5c3d7e", 3, "Rep-R")]
+    assert [(v["hash"], v["count"], v["snr"], v["name"]) for v in st["via"]] == [("5c3d7e", 3, 3.0, "Rep-R")]

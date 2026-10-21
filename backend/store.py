@@ -268,8 +268,8 @@ class Store:
             "recent": adverts,
             "hourly": sorted(hours.items()),
             "snrDist": sorted(dist.items()),
-            "peers": sorted(([h, a, b] for h, (a, b) in peers.items() if h not in hs), key=lambda x: -(x[1] + x[2]))[:15],
-            "via": sorted(([h, c, s / c] for h, (c, s) in via.items()), key=lambda x: -x[1])[:10],
+            "peers": sorted(([h, a, b] for h, (a, b) in peers.items() if h not in hs), key=lambda x: -(x[1] + x[2]))[:60],  # Mesh.node_stats fasst nach Knoten zusammen und kürzt
+            "via": sorted(([h, c, s / c] for h, (c, s) in via.items()), key=lambda x: -x[1])[:40],
         }
 
     def msg_stats(self, dev: str, since: int) -> dict:
